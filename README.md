@@ -28,6 +28,8 @@
 2. 进入 **API development tools**,创建一个应用
 3. 记下 `api_id` 和 `api_hash`
 
+> ⚠️ API_ID/API_HASH 是「应用凭证」,与登录哪个账号本身无关(同一套凭证能登录不同账号)。但 Telegram 倾向于「谁创建的凭证就用谁登录」,**用一套凭证频繁登录多个不同账号容易触发风控/封号**。建议用你要登录的那个账号自己申请 API_ID/API_HASH。
+
 ### 2. 配置 `.env`
 
 复制模板并填写:
@@ -66,38 +68,44 @@ python telegram-downloader.py
    - 私有频道:`https://t.me/c/1234567890/123`
 3. 机器人会回复一条状态消息,并实时更新进度,直至完成
 
-## 🐳 Docker 部署
+## 🐳 Docker 部署(Docker Compose)
 
-### 拉取镜像
+推荐用 `docker-compose.yml` 部署。先把里面的 `image:` 改成你自己的镜像名(与 GitHub Actions 推送的一致)。
 
-镜像由 GitHub Actions 自动构建并推送到 Docker Hub:
+`docker-compose.yml` 通过文件挂载提供配置与登录态:
+
+| 挂载项 | 作用 |
+|--------|------|
+| `./.env:/app/.env:ro` | 注入 API 凭证与目标频道配置(只读) |
+| `./my_transfer_session.session:/app/...` | Telegram 登录态,持久化到宿主机 |
+| `./downloads:/app/downloads` | 下载的文件持久化到宿主机 |
+
+### ⚠️ 首次登录:必须先在容器内交互完成一次
+
+容器后台运行(`up -d`)没有交互终端,无法输入手机号和验证码。
+**首次部署时,先用下面这条交互命令登录一次**,登录态会写入挂载的 `my_transfer_session.session`,之后就能后台运行了。
 
 ```bash
-docker pull <你的DockerHub用户名>/telegram-downloader:latest
+# 1. 准备工作:确保 .env 已填好,且 session 文件先占位存在(否则挂载会变成目录)
+touch my_transfer_session.session
+
+# 2. 交互式首次登录:依次输入手机号、Telegram 发来的验证码、(如有)两步验证密码
+docker compose run --rm -it telegram-downloader python telegram-downloader.py
+
+# 看到 "🚀 UserBot 已启动并正在监听收藏夹..." 即登录成功,按 Ctrl+C 退出
 ```
 
-### 运行(挂载密钥与登录态)
+> 💡 为什么不能让容器自动生成?因为 Telegram 的验证码只发到你本人的 App,必须手动输入一次。这一步**只需做一次**,session 生成后会一直复用。
 
-> ⚠️ **必须先在本地完成一次登录生成 `my_transfer_session.session`**,再挂载进容器。容器内无交互终端,无法完成首次手机号+验证码登录。
+### 启动 / 常用命令
 
 ```bash
-docker run -d --name tg-downloader \
-  --env-file ./.env \
-  -v "$(pwd)/my_transfer_session.session:/app/my_transfer_session.session" \
-  -v "$(pwd)/downloads:/app/downloads" \
-  --restart unless-stopped \
-  <你的DockerHub用户名>/telegram-downloader:latest
+docker compose up -d        # 后台启动(首次登录完成后)
+docker compose logs -f      # 查看实时日志
+docker compose pull         # 拉取最新镜像
+docker compose restart      # 重启
+docker compose down         # 停止并移除容器
 ```
-
-挂载说明:
-
-| 挂载项                        | 作用                        |
-| ----------------------------- | --------------------------- |
-| `--env-file ./.env`           | 注入 API 凭证与目标频道配置 |
-| `my_transfer_session.session` | 复用本地登录态,免容器内登录 |
-| `downloads/`                  | 下载的文件持久化到宿主机    |
-
-查看日志:`docker logs -f tg-downloader`
 
 ## ⚙️ GitHub Actions 自动构建
 

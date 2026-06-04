@@ -1,0 +1,15 @@
+# 绝不打包进镜像的敏感文件（运行时通过挂载提供）
+.env
+*.session
+*.session-journal
+downloads/
+
+# 杂项
+.git
+.gitignore
+__pycache__/
+*.pyc
+.DS_Store
+Dockerfile
+.dockerignore
+README.md

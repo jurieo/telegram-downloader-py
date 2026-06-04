@@ -4,6 +4,7 @@ import time
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from telethon.errors import MessageNotModifiedError, ChatForwardsRestrictedError
+from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
 # ================= 1. 读取配置 =================
 load_dotenv()
@@ -71,26 +72,52 @@ class ProgressBar:
 @client.on(events.NewMessage(chats='me'))
 async def my_event_handler(event):
     text = event.raw_text
-    link_pattern = r'https?://t\.me/(?:c/(\d+)/|([\w_]+)/)(\d+)'
+    # 支持普通消息链接，以及帖子评论链接（comment 参数可能在查询串任意位置，
+    # 如 ?comment=1163 或 ?single&comment=1163），故先抓查询串再单独解析 comment
+    link_pattern = r'https?://t\.me/(?:c/(\d+)/|([\w_]+)/)(\d+)(\?\S*)?'
     match = re.search(link_pattern, text)
-    
+
     if not match:
-        return 
+        return
 
     # 发送一条占位消息，后面所有的进度都在这条消息上动态修改
     status_msg = await event.reply("🔄 **正在解析链接...**")
-    
-    private_chat_id, public_username, msg_id = match.groups()
+
+    private_chat_id, public_username, msg_id, query = match.groups()
     msg_id = int(msg_id)
-    
+
+    # 从查询串里提取评论 id（?comment=xxx，顺序无关）
+    comment_id = None
+    if query:
+        cm = re.search(r'[?&]comment=(\d+)', query)
+        if cm:
+            comment_id = cm.group(1)
+
     try:
         if private_chat_id:
             chat_id = int(f"-100{private_chat_id}")
         else:
             chat_id = public_username
 
-        source_msg = await client.get_messages(chat_id, ids=msg_id)
-        
+        if comment_id:
+            # 评论区文件：评论实际存放在频道关联的「讨论群」里，而非频道本身。
+            # ?comment=xxx 中的 xxx 是「讨论群内」的消息 id。
+            # 步骤：用帖子定位讨论串 → 从返回的 chats 里取讨论群(megagroup)
+            #       → 用 comment_id 到讨论群里取那条评论。
+            await status_msg.edit("🔄 **正在解析评论区...**")
+            discussion = await client(GetDiscussionMessageRequest(peer=chat_id, msg_id=msg_id))
+            # 关联讨论群在 chats 里，且带完整 access_hash，实体解析才可靠
+            disc_group = next(
+                (c for c in discussion.chats if getattr(c, 'megagroup', False)),
+                None
+            )
+            if disc_group is None:
+                await status_msg.edit("❌ **解析失败**：该频道未开启评论（找不到关联讨论群）。")
+                return
+            source_msg = await client.get_messages(disc_group, ids=int(comment_id))
+        else:
+            source_msg = await client.get_messages(chat_id, ids=msg_id)
+
         if not source_msg or not source_msg.media:
             await status_msg.edit("❌ **解析失败**：找不到消息，或者该消息中没有可下载的媒体文件。")
             return
@@ -137,9 +164,7 @@ async def my_event_handler(event):
             # 清理并发送最终成功提示
             os.remove(file_path)
             await status_msg.edit(
-                "🎉 **转存任务完美结束！**\n"
-                "✅ 文件已发送至目标频道\n"
-                "🗑️ 服务器本地缓存已清理"
+                "🎉 转发成功"
             )
 
         # 步骤 0：优先尝试直接转发（零下载、零本地占用）

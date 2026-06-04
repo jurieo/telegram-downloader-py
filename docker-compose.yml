@@ -1,0 +1,13 @@
+services:
+  telegram-downloader:
+    # 改成你自己的镜像名（与 GitHub Actions 推送的一致）
+    image: jurieo/telegram-downloader:latest
+    container_name: tg-downloader
+    restart: unless-stopped
+    volumes:
+      # 环境变量文件：挂载进容器，程序内 load_dotenv() 读取 /app/.env
+      - ./.env:/app/.env:ro
+      # Telegram 登录态：复用本地已生成的 session，免容器内登录
+      - ./my_transfer_session.session:/app/my_transfer_session.session
+      # 下载目录：持久化到宿主机
+      - ./downloads:/app/downloads

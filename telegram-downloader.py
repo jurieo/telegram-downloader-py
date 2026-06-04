@@ -152,13 +152,23 @@ async def my_event_handler(event):
             await status_msg.edit("✅ **下载到服务器完成！**\n🚀 准备开始上传...")
             time.sleep(1)  # 停顿1秒，让用户看清楚过渡状态
 
+            # 复用原始媒体的属性（视频宽高/时长/可流式播放、文件名、mime 类型）。
+            # 否则 Telethon 重传时无法识别视频元数据，会导致：
+            #   1) 视频变形为正方形（缺宽高）  2) 必须下完才能播放（缺 supports_streaming）
+            send_kwargs = {}
+            doc = getattr(source_msg, 'document', None)
+            if doc:
+                send_kwargs['attributes'] = doc.attributes
+                send_kwargs['mime_type'] = doc.mime_type
+
             # 上传，绑定上传进度条
             ul_progress = ProgressBar(status_msg, "📤 **正在将文件上传到目标频道...**")
             await client.send_file(
                 TARGET_CHAT,
                 file_path,
                 caption=source_msg.text if source_msg.text else "",
-                progress_callback=ul_progress.callback
+                progress_callback=ul_progress.callback,
+                **send_kwargs
             )
 
             # 清理并发送最终成功提示

@@ -28,6 +28,12 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # 设置默认tag
+      - name: Set default tag
+        run: |
+          echo "TAG=latest" >> $GITHUB_ENV
+          echo "IMAGE_TAGS=${{ github.repository_owner }}/telegram-downloader:${{ github.event.inputs.tag }}" >> $GITHUB_ENV
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -35,6 +41,6 @@ jobs:
           file: ./Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ github.repository_owner }}/telegram-downloader:${{ github.event.inputs.tag }}
+          tags: ${{ env.IMAGE_TAGS }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

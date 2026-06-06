@@ -72,9 +72,9 @@ class ProgressBar:
 @client.on(events.NewMessage(chats='me'))
 async def my_event_handler(event):
     text = event.raw_text
-    # 支持普通消息链接，以及帖子评论链接（comment 参数可能在查询串任意位置，
-    # 如 ?comment=1163 或 ?single&comment=1163），故先抓查询串再单独解析 comment
-    link_pattern = r'https?://t\.me/(?:c/(\d+)/|([\w_]+)/)(\d+)(\?\S*)?'
+    # 支持普通消息链接、帖子评论链接（?comment=xxx）、以及话题内消息链接
+    # 话题链接格式：t.me/username/topic_id/msg_id 或 t.me/c/chat_id/topic_id/msg_id
+    link_pattern = r'https?://t\.me/(?:c/(\d+)/|([\w_]+)/)(\d+)(?:/(\d+))?(\?\S*)?'
     match = re.search(link_pattern, text)
 
     if not match:
@@ -83,8 +83,11 @@ async def my_event_handler(event):
     # 发送一条占位消息，后面所有的进度都在这条消息上动态修改
     status_msg = await event.reply("🔄 **正在解析链接...**")
 
-    private_chat_id, public_username, msg_id, query = match.groups()
-    msg_id = int(msg_id)
+    private_chat_id, public_username, first_id, second_id, query = match.groups()
+    if second_id:
+        msg_id = int(second_id)
+    else:
+        msg_id = int(first_id)
 
     # 从查询串里提取评论 id（?comment=xxx，顺序无关）
     comment_id = None

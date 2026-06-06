@@ -2,6 +2,9 @@ name: Build & Push telegram-downloader
 
 # 手动点击触发（Actions 页面 → 选择本工作流 → Run workflow）
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       tag:

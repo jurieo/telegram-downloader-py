@@ -6,6 +6,10 @@ from telethon import TelegramClient, events
 from telethon.errors import MessageNotModifiedError, ChatForwardsRestrictedError
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
+from progress import ProgressBar
+from aria2_client import Aria2Client
+import media_upload
+
 # ================= 1. 读取配置 =================
 load_dotenv()
 
@@ -20,58 +24,98 @@ except TypeError:
 _target = os.getenv("TARGET_CHAT")
 TARGET_CHAT = int(_target) if _target else None
 
+# 磁力下载相关配置（均有默认值，旧 .env 不改也能跑）
+MAX_UPLOAD_CONCURRENCY = int(os.getenv("MAX_UPLOAD_CONCURRENCY", "4"))
+MAX_FILE_SIZE_GB = float(os.getenv("MAX_FILE_SIZE_GB", "4"))
+DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "./downloads")
+TORRENT_STALL_TIMEOUT = int(os.getenv("TORRENT_STALL_TIMEOUT", "300"))
+
 client = TelegramClient('my_transfer_session', API_ID, API_HASH)
+# 适当抬高自动等待阈值：并发上传触发小额 FloodWait 时由 telethon 自行 sleep
+client.flood_sleep_threshold = 120
+
+# aria2 下载引擎（磁力链接用）；是否就绪由 ARIA2_READY 标记
+aria2 = Aria2Client(DOWNLOAD_DIR, stall_timeout=TORRENT_STALL_TIMEOUT)
+ARIA2_READY = False
+
+# 磁力链接识别
+MAGNET_RE = r'magnet:\?xt=urn:btih:[^\s]+'
 
 # ================= 2. 进度条工具类 =================
-class ProgressBar:
-    def __init__(self, message_obj, action_title):
-        self.message_obj = message_obj
-        self.action_title = action_title
-        self.last_update_time = 0
+# ProgressBar / AggregateProgress 见 progress.py
 
-    async def callback(self, current_bytes, total_bytes):
-        # 如果获取不到总大小，直接跳过计算
-        if total_bytes == 0:
+
+# ================= 3. 磁力下载处理 =================
+def _format_skipped(skipped):
+    return "\n".join(
+        f"  • {name}（{size / (1024 ** 3):.2f} GB，{reason}）"
+        for name, size, reason in skipped
+    )
+
+
+async def handle_magnet(event, magnet):
+    if not ARIA2_READY:
+        await event.reply("❌ **磁力下载不可用**：aria2 引擎未就绪。")
+        return
+
+    status_msg = await event.reply("🧲 **收到磁力链接，正在准备下载…**")
+    max_bytes = int(MAX_FILE_SIZE_GB * (1024 ** 3))
+    result = None
+    try:
+        result = await aria2.download_magnet(magnet, status_msg, max_bytes)
+
+        # 没有可上传的视频（全是非视频，或视频全部超限）
+        if not result.downloaded_files:
+            msg = "❌ **未找到可上传的视频文件**"
+            if result.skipped:
+                msg += "\n⏭️ 以下视频因过大被跳过：\n" + _format_skipped(result.skipped)
+            await status_msg.edit(msg)
+            await aria2.cleanup(result)
             return
 
-        now = time.time()
-        # 核心限流：限制每 2 秒最多更新一次界面（防止被 Telegram 官方限制）
-        # 如果进度到达 100% (current_bytes == total_bytes)，强制更新一次
-        if now - self.last_update_time < 2 and current_bytes != total_bytes:
+        # ===== 模式 A：未配置 TARGET_CHAT，仅下载到本地（不上传、不删除） =====
+        if TARGET_CHAT is None:
+            paths = "\n".join(f"`{p}`" for p in result.downloaded_files)
+            await status_msg.edit(
+                f"🎉 **下载完成！** 共 {len(result.downloaded_files)} 个视频\n"
+                f"✅ 已保存到服务器：\n{paths}"
+            )
             return
 
-        self.last_update_time = now
-
-        # 计算百分比和容量 (转换为 MB)
-        percent = (current_bytes / total_bytes) * 100
-        current_mb = current_bytes / (1024 * 1024)
-        total_mb = total_bytes / (1024 * 1024)
-
-        # 绘制字符进度条 [██████░░░░]
-        bar_length = 15
-        filled_length = int(bar_length * current_bytes // total_bytes)
-        bar = '█' * filled_length + '░' * (bar_length - filled_length)
-
-        # 组装展示文本
-        text = (
-            f"{self.action_title}\n"
-            f"[{bar}] {percent:.1f}%\n"
-            f"📦 进度: {current_mb:.2f} MB / {total_mb:.2f} MB"
+        # ===== 模式 B：已配置 TARGET_CHAT，并发上传后清理 =====
+        await status_msg.edit(
+            f"✅ **下载完成，共 {len(result.downloaded_files)} 个视频，开始上传…**"
+        )
+        uploaded, failed = await media_upload.upload_videos(
+            client, TARGET_CHAT, result.downloaded_files, status_msg, MAX_UPLOAD_CONCURRENCY
         )
 
-        try:
-            # 动态编辑那条状态消息
-            await self.message_obj.edit(text)
-        except MessageNotModifiedError:
-            # 如果文字没变化，Telegram 会报错，直接忽略即可
-            pass
-        except Exception as e:
-            print(f"进度条更新异常: {e}")
+        summary = f"🎉 **完成！已上传 {uploaded} 个视频**"
+        if result.skipped:
+            summary += "\n⏭️ 跳过：\n" + _format_skipped(result.skipped)
+        if failed:
+            summary += "\n⚠️ 上传失败：\n" + "\n".join(
+                f"  • {name}（{reason}）" for name, reason in failed
+            )
+        await status_msg.edit(summary)
 
-# ================= 3. 核心处理逻辑 =================
+        await aria2.cleanup(result)
+    except Exception as e:
+        await status_msg.edit(f"❌ **磁力下载失败**：\n`{e}`")
+        await aria2.cleanup(result)
+
+
+# ================= 4. 核心处理逻辑 =================
 @client.on(events.NewMessage(chats='me'))
 async def my_event_handler(event):
     text = event.raw_text
+
+    # 优先识别磁力链接，走磁力下载流程
+    magnet_match = re.search(MAGNET_RE, text)
+    if magnet_match:
+        await handle_magnet(event, magnet_match.group(0))
+        return
+
     # 支持普通消息链接、帖子评论链接（?comment=xxx）、以及话题内消息链接
     # 话题链接格式：t.me/username/topic_id/msg_id 或 t.me/c/chat_id/topic_id/msg_id
     link_pattern = r'https?://t\.me/(?:c/(\d+)/|([\w_]+)/)(\d+)(?:/(\d+))?(\?\S*)?'
@@ -124,7 +168,7 @@ async def my_event_handler(event):
         if not source_msg or not source_msg.media:
             await status_msg.edit("❌ **解析失败**：找不到消息，或者该消息中没有可下载的媒体文件。")
             return
-            
+
         # 受保护内容时使用的回退方案：下载到本地 → 重新上传
         async def download_to_local():
             download_dir = './downloads'
@@ -207,8 +251,19 @@ async def my_event_handler(event):
     except Exception as e:
         await status_msg.edit(f"❌ **发生未知错误**：\n`{str(e)}`")
 
-# ================= 4. 启动程序 =================
+# ================= 5. 启动程序 =================
 if __name__ == '__main__':
-    print(f"🚀 UserBot 已启动并正在监听收藏夹...")
-    client.start()
-    client.run_until_disconnected()
+    print("🚀 UserBot 启动中…")
+    try:
+        aria2.start()
+        ARIA2_READY = True
+        print("✅ aria2 下载引擎已就绪（支持磁力链接）")
+    except Exception as e:
+        print(f"⚠️ aria2 启动失败，磁力下载不可用（t.me 链接仍可用）：{e}")
+
+    try:
+        client.start()
+        print("🚀 UserBot 已启动并正在监听收藏夹...")
+        client.run_until_disconnected()
+    finally:
+        aria2.stop()

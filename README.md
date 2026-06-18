@@ -1,10 +1,11 @@
 # telegram-downloader
 
-一个基于 [Telethon](https://github.com/LonamiWebs/Telethon) 的 Telegram **UserBot**(个人账号机器人):监听你自己的「收藏夹 (Saved Messages)」,你把任意消息链接发进去,它就自动把对应的媒体文件**转发**或**下载**下来。
+一个基于 [Telethon](https://github.com/LonamiWebs/Telethon) 的 Telegram **UserBot**(个人账号机器人):监听你自己的「收藏夹 (Saved Messages)」,你把任意消息链接**或磁力链接**发进去,它就自动把对应的媒体文件**转发**或**下载**下来。
 
 ## ✨ 功能特性
 
 - 🔗 **发链接即用**:往收藏夹粘贴 `https://t.me/...` 消息链接,自动识别并处理
+- 🧲 **磁力链接下载**:粘贴 `magnet:?xt=...` 磁力链接,用 aria2 下载种子里的**视频文件**并上传到目标频道(只下视频、自动跳过超大文件)
 - 🚀 **智能转发**:源频道允许转发时,直接**无引用转发**(不带「转发自」标签),零下载零流量
 - 📥 **受保护内容兜底**:源频道开启「禁止保存/转发」时,自动回退为「下载到本地 → 重新上传」
 - 💾 **仅下载模式**:不配置目标频道时,只把文件下载到本地,不做任何转发
@@ -45,15 +46,22 @@ API_HASH=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # 目标频道/群组 ID。留空 = 仅下载模式
 TARGET_CHAT=-1001234567890
+
+# ===== 磁力链接下载(可选,均有默认值) =====
+MAX_UPLOAD_CONCURRENCY=4    # 并发上传上限(默认 4,过高易触发 FloodWait,建议 3-5)
+MAX_FILE_SIZE_GB=4          # 单文件大小上限 GB,超过则不下载不上传(默认 4,对应 Premium 4GB)
+DOWNLOAD_DIR=./downloads    # 下载目录
+TORRENT_STALL_TIMEOUT=300   # 种子长时间无速度即放弃的秒数(处理"无人做种")
 ```
 
 > 💡 `TARGET_CHAT` 留空即进入「仅下载」模式。频道 ID 通常形如 `-100xxxxxxxxxx`。
+> 磁力相关字段不填则用默认值,旧 `.env` 无需改动即可使用。
 
 ## 🖥️ 本地运行
 
 ```bash
 pip install -r requirements.txt
-python telegram-downloader.py
+python main.py
 ```
 
 **首次运行**会要求输入手机号 + 登录验证码(可能还有两步验证密码),成功后会在当前目录生成 `my_transfer_session.session` 登录态文件。之后运行不再需要登录。
@@ -66,7 +74,13 @@ python telegram-downloader.py
 2. 把任意消息链接粘贴进去,例如:
    - 公开频道:`https://t.me/channelname/123`
    - 私有频道:`https://t.me/c/1234567890/123`
-3. 机器人会回复一条状态消息,并实时更新进度,直至完成
+3. 或者粘贴一个**磁力链接**(`magnet:?xt=urn:btih:...`):程序会用 aria2 下载种子里的**视频文件**并上传到目标频道
+   - 只下载/上传视频(音频、图片、字幕、nfo 等忽略,也不下载)
+   - 单文件超过 `MAX_FILE_SIZE_GB`(默认 4GB)会被跳过,并在消息里说明原因
+   - 多个视频按 `MAX_UPLOAD_CONCURRENCY` 并发上传
+4. 机器人会回复一条状态消息,并实时更新进度,直至完成
+
+> 🧲 本地运行磁力功能需要系统已安装 `aria2`(`apt install aria2` / `brew install aria2`);Docker 镜像已内置,无需额外安装。
 
 ## 🐳 Docker 部署(Docker Compose)
 
@@ -90,7 +104,7 @@ python telegram-downloader.py
 touch my_transfer_session.session
 
 # 2. 交互式首次登录:依次输入手机号、Telegram 发来的验证码、(如有)两步验证密码
-docker compose run --rm -it telegram-downloader python telegram-downloader.py
+docker compose run --rm -it telegram-downloader python main.py
 
 # 看到 "🚀 UserBot 已启动并正在监听收藏夹..." 即登录成功,按 Ctrl+C 退出
 ```
@@ -133,9 +147,15 @@ docker compose down         # 停止并移除容器
 
 ```
 .
-├── telegram-downloader.py   # 主程序
+├── main.py                   # 主程序入口:配置、事件分流、t.me 转发流程
+├── filters.py                # 视频文件识别 + 选择性下载决策(纯函数)
+├── progress.py               # 进度条:单文件进度 + 并发上传聚合进度
+├── aria2_client.py           # aria2c 守护进程管理 + JSON-RPC + 磁力下载
+├── media_upload.py           # 视频并发上传 + FloodWait 退避
+├── scripts/                  # 联调脚本(aria2_selftest.py,不依赖 Telegram)
+├── tests/                    # 纯逻辑单元测试(pytest)
 ├── requirements.txt          # Python 依赖
-├── Dockerfile                # 镜像构建
+├── Dockerfile                # 镜像构建(内置 aria2)
 ├── .dockerignore             # 排除密钥/登录态进镜像
 ├── .env.example              # 环境变量模板
 └── .github/workflows/        # 手动触发的构建推送工作流

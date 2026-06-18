@@ -8,14 +8,19 @@ ENV TZ=Asia/Shanghai \
 
 WORKDIR /app
 
+# 系统依赖：aria2 用于磁力链接下载（amd64/arm64 均有，体积小）
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends aria2 \
+    && rm -rf /var/lib/apt/lists/*
+
 # 先装依赖，利用 Docker 层缓存（requirements 不变则不重装）
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 拷贝源码（.session / .env / downloads 已被 .dockerignore 排除，运行时挂载）
-COPY telegram-downloader.py .
+COPY *.py .
 
 # 下载目录作为数据卷，方便持久化到宿主机
 VOLUME ["/app/downloads"]
 
-CMD ["python", "telegram-downloader.py"]
+CMD ["python", "main.py"]

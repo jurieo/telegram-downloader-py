@@ -18,6 +18,10 @@
 
 默认测试种子为 WebTorrent 的 Sintel 测试种子：包含 Sintel.mp4（视频）+ 字幕/海报（非视频），
 正好能验证“只选视频、忽略其它”的逻辑。
+
+⚠️ 注意：Sintel 主要在 WebTorrent(浏览器/WSS)网络做种，传统 BitTorrent(DHT/UDP tracker)上的
+seeder 可能很少，偶尔会拿不到 metadata。要做可靠的端到端测试，**建议传一个你确认在传统 BT 上
+有人做种的磁力**（例如某个热门 Linux 发行版 ISO 的磁力链接）。
 """
 
 import argparse

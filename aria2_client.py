@@ -10,6 +10,21 @@ import urllib.request
 from filters import plan_files
 from progress import make_bar
 
+# 给「裸磁力」(只有 infohash、不带 tracker) 兜底用的公共 tracker，
+# 注入后即便磁力本身没带 tracker 也能找到 peer。
+DEFAULT_TRACKERS = ",".join([
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://open.tracker.cl:1337/announce",
+    "udp://open.demonii.com:1337/announce",
+    "udp://tracker.openbittorrent.com:6969/announce",
+    "udp://exodus.desync.com:6969/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://explodie.org:6969/announce",
+])
+
+# DHT 引导节点：容器首次启动没有 DHT 路由表，必须给入口点才能 bootstrap。
+DHT_ENTRY_POINT = "router.bittorrent.com:6881"
+
 
 class Aria2Error(Exception):
     pass
@@ -52,6 +67,13 @@ class Aria2Client:
             # 磁力元数据下完后，由它派生的文件下载先暂停，等我们选好视频再继续
             "--pause-metadata=true",
             "--bt-save-metadata=false",
+            # 找种增强：开 DHT(带引导节点) + LPD + PEX，并注入公共 tracker，
+            # 让没带 tracker 的裸磁力也能找到 peer
+            "--enable-dht=true",
+            f"--dht-entry-point={DHT_ENTRY_POINT}",
+            "--bt-enable-lpd=true",
+            "--enable-peer-exchange=true",
+            f"--bt-tracker={DEFAULT_TRACKERS}",
             "--summary-interval=0",
             "--console-log-level=warn",
             "--daemon=false",
@@ -98,7 +120,14 @@ class Aria2Client:
 
     async def _rpc(self, method, *params):
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._rpc_sync, method, list(params))
+        try:
+            return await loop.run_in_executor(None, self._rpc_sync, method, list(params))
+        except Aria2Error:
+            raise
+        except Exception as e:
+            # 把空消息的网络异常(如 TimeoutError)包装成有内容的错误，避免显示空白
+            detail = str(e).strip() or type(e).__name__
+            raise Aria2Error(f"RPC {method} 失败：{detail}")
 
     # ---------- 下载主流程 ----------
     async def download_magnet(self, magnet, status_msg, max_file_bytes):

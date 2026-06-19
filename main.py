@@ -101,7 +101,10 @@ async def handle_magnet(event, magnet):
 
         await aria2.cleanup(result)
     except Exception as e:
-        await status_msg.edit(f"❌ **磁力下载失败**：\n`{e}`")
+        # 保证错误信息非空（某些异常如 TimeoutError 的 str() 为空），并打到 docker 日志
+        detail = str(e).strip() or type(e).__name__
+        print(f"⚠️ 磁力下载失败：{detail}")
+        await status_msg.edit(f"❌ **磁力下载失败**：\n`{detail}`")
         await aria2.cleanup(result)
 
 

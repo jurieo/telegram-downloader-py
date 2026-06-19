@@ -19,6 +19,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 拷贝源码（.session / .env / downloads 已被 .dockerignore 排除，运行时挂载）
 COPY *.py .
+# 联调脚本（不依赖 Telegram，可在容器内单独跑来排查 aria2 下载链路）
+COPY scripts/ ./scripts/
 
 # 下载目录作为数据卷，方便持久化到宿主机
 VOLUME ["/app/downloads"]

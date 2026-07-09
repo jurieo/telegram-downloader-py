@@ -27,3 +27,4 @@ dist-ssr
 
 downloads/
 my_transfer_session.*
+.venv

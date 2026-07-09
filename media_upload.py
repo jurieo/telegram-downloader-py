@@ -6,14 +6,16 @@ from telethon.errors import FloodWaitError
 from progress import AggregateProgress
 
 
-async def upload_videos(client, target_chat, files, status_msg, concurrency, flood_retries=3):
+async def upload_videos(client, target_chat, files, status_msg, concurrency,
+                        registry=None, flood_retries=3):
     """并发上传视频文件到目标频道。
 
     - 用信号量限制最大并发（并发越高越容易触发 Telegram FloodWait）。
     - 视频带 supports_streaming=True，让 Telegram 当可在线播放的视频处理；
       装了 hachoir 后 telethon 会自动补全宽高/时长，避免“方块视频”。
     - 单个文件触发 FloodWaitError 时按要求退避重试。
-    返回 (成功数, failed)，failed 为 [(文件名, 原因)]。
+    - registry 非空时，把每条成功上传的消息记入，供上层扇出到其余目标并防回环。
+    返回 (成功数, failed, sent_messages)，failed 为 [(文件名, 原因)]。
     """
     total_bytes = 0
     for p in files:
@@ -27,6 +29,7 @@ async def upload_videos(client, target_chat, files, status_msg, concurrency, flo
 
     sem = asyncio.Semaphore(max(1, concurrency))
     failed = []
+    sent_messages = []
 
     async def _upload_one(path):
         name = os.path.basename(path)
@@ -34,13 +37,16 @@ async def upload_videos(client, target_chat, files, status_msg, concurrency, flo
             attempt = 0
             while True:
                 try:
-                    await client.send_file(
+                    msg = await client.send_file(
                         target_chat,
                         path,
                         caption=name,
                         supports_streaming=True,
                         progress_callback=agg.callback_for(path),
                     )
+                    if registry is not None:
+                        registry.add_messages(msg)
+                    sent_messages.append(msg)
                     agg.mark_done(path)
                     await agg.render(force=True)
                     return
@@ -57,4 +63,4 @@ async def upload_videos(client, target_chat, files, status_msg, concurrency, flo
                     return
 
     await asyncio.gather(*[_upload_one(p) for p in files])
-    return len(files) - len(failed), failed
+    return len(files) - len(failed), failed, sent_messages

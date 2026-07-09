@@ -1,13 +1,14 @@
 import os
 import re
-import time
 from dotenv import load_dotenv
-from telethon import TelegramClient, events
-from telethon.errors import MessageNotModifiedError, ChatForwardsRestrictedError
+from telethon import TelegramClient, events, utils
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
 from progress import ProgressBar
 from aria2_client import Aria2Client
+from filters import is_video_message
+from routing import parse_target_chats, compute_targets, SentRegistry
+import forwarder
 import media_upload
 
 # ================= 1. 读取配置 =================
@@ -20,9 +21,9 @@ except TypeError:
     print("❌ 启动失败：请检查 .env 文件（API_ID / API_HASH 必填）")
     exit(1)
 
-# TARGET_CHAT 可选：留空则进入「仅下载」模式，不再转发/重传
-_target = os.getenv("TARGET_CHAT")
-TARGET_CHAT = int(_target) if _target else None
+# TARGET_CHAT：逗号分隔的多个备份目标 id，构成「互为备份」集合 S。
+# 留空 = 仅下载模式（只监听收藏夹，只下载不转发）。
+TARGET_CHATS = parse_target_chats(os.getenv("TARGET_CHAT"))
 
 # 磁力下载相关配置（均有默认值，旧 .env 不改也能跑）
 MAX_UPLOAD_CONCURRENCY = int(os.getenv("MAX_UPLOAD_CONCURRENCY", "4"))
@@ -38,14 +39,22 @@ client.flood_sleep_threshold = 120
 aria2 = Aria2Client(DOWNLOAD_DIR, stall_timeout=TORRENT_STALL_TIMEOUT)
 ARIA2_READY = False
 
-# 磁力链接识别
+# 磁力链接 / 消息链接识别
 MAGNET_RE = r'magnet:\?xt=urn:btih:[^\s]+'
+# 支持普通消息链接、帖子评论链接（?comment=xxx）、以及话题内消息链接
+LINK_PATTERN = r'https?://t\.me/(?:c/(\d+)/|([\w_]+)/)(\d+)(?:/(\d+))?(\?\S*)?'
+
+# ================= 运行时状态（在 _amain 里解析赋值） =================
+ME_ID = None            # 本账号自身 id（收藏夹 me 的 chat_id）
+TARGET_IDS = []         # 规范化后的备份目标 id 列表
+registry = SentRegistry()   # 记录机器人自己发出的消息，防止互为备份时死循环
+
 
 # ================= 2. 进度条工具类 =================
 # ProgressBar / AggregateProgress 见 progress.py
 
 
-# ================= 3. 磁力下载处理 =================
+# ================= 3. 磁力下载处理（仅收藏夹触发） =================
 def _format_skipped(skipped):
     return "\n".join(
         f"  • {name}（{size / (1024 ** 3):.2f} GB，{reason}）"
@@ -73,8 +82,8 @@ async def handle_magnet(event, magnet):
             await aria2.cleanup(result)
             return
 
-        # ===== 模式 A：未配置 TARGET_CHAT，仅下载到本地（不上传、不删除） =====
-        if TARGET_CHAT is None:
+        # ===== 模式 A：未配置备份目标，仅下载到本地（不上传、不删除） =====
+        if not TARGET_IDS:
             paths = "\n".join(f"`{p}`" for p in result.downloaded_files)
             await status_msg.edit(
                 f"🎉 **下载完成！** 共 {len(result.downloaded_files)} 个视频\n"
@@ -82,15 +91,25 @@ async def handle_magnet(event, magnet):
             )
             return
 
-        # ===== 模式 B：已配置 TARGET_CHAT，并发上传后清理 =====
+        # ===== 模式 B：上传到首个目标，再服务器端扇出到其余目标 =====
         await status_msg.edit(
             f"✅ **下载完成，共 {len(result.downloaded_files)} 个视频，开始上传…**"
         )
-        uploaded, failed = await media_upload.upload_videos(
-            client, TARGET_CHAT, result.downloaded_files, status_msg, MAX_UPLOAD_CONCURRENCY
+        uploaded, failed, sent = await media_upload.upload_videos(
+            client, TARGET_IDS[0], result.downloaded_files, status_msg,
+            MAX_UPLOAD_CONCURRENCY, registry=registry,
         )
 
-        summary = f"🎉 **完成！已上传 {uploaded} 个视频**"
+        # 从首个目标转给其余目标，零重复上传，drop_author 去引用
+        for target in TARGET_IDS[1:]:
+            for m in sent:
+                try:
+                    s2 = await client.forward_messages(target, m, drop_author=True)
+                    registry.add_messages(s2)
+                except Exception as e:
+                    print(f"⚠️ 磁力扇出到 {target} 失败：{e}")
+
+        summary = f"🎉 **完成！已上传 {uploaded} 个视频到 {len(TARGET_IDS)} 个目标**"
         if result.skipped:
             summary += "\n⏭️ 跳过：\n" + _format_skipped(result.skipped)
         if failed:
@@ -108,33 +127,34 @@ async def handle_magnet(event, magnet):
         await aria2.cleanup(result)
 
 
-# ================= 4. 核心处理逻辑 =================
-@client.on(events.NewMessage(chats='me'))
-async def my_event_handler(event):
-    text = event.raw_text
+# ================= 4. 链接处理（仅收藏夹触发） =================
+async def get_album(chat, message, max_amp=10):
+    """从一条消息取出它所在的整个相册（媒体组）。
 
-    # 优先识别磁力链接，走磁力下载流程
-    magnet_match = re.search(MAGNET_RE, text)
-    if magnet_match:
-        await handle_magnet(event, magnet_match.group(0))
-        return
+    链接只指向相册中的一条，按 grouped_id 在 ±max_amp 窗口内捞出同组消息。
+    非相册消息直接返回单元素列表。
+    """
+    if getattr(message, "grouped_id", None) is None:
+        return [message]
+    ids = list(range(message.id - max_amp, message.id + max_amp + 1))
+    around = await client.get_messages(chat, ids=ids)
+    group = [
+        m for m in around
+        if m is not None and m.grouped_id == message.grouped_id and m.media is not None
+    ]
+    return group or [message]
 
-    # 支持普通消息链接、帖子评论链接（?comment=xxx）、以及话题内消息链接
-    # 话题链接格式：t.me/username/topic_id/msg_id 或 t.me/c/chat_id/topic_id/msg_id
-    link_pattern = r'https?://t\.me/(?:c/(\d+)/|([\w_]+)/)(\d+)(?:/(\d+))?(\?\S*)?'
-    match = re.search(link_pattern, text)
 
-    if not match:
-        return
-
-    # 发送一条占位消息，后面所有的进度都在这条消息上动态修改
+async def handle_link(event):
     status_msg = await event.reply("🔄 **正在解析链接...**")
 
+    match = re.search(LINK_PATTERN, event.raw_text)
+    if not match:
+        await status_msg.edit("❌ **未识别到有效链接**")
+        return
+
     private_chat_id, public_username, first_id, second_id, query = match.groups()
-    if second_id:
-        msg_id = int(second_id)
-    else:
-        msg_id = int(first_id)
+    msg_id = int(second_id) if second_id else int(first_id)
 
     # 从查询串里提取评论 id（?comment=xxx，顺序无关）
     comment_id = None
@@ -144,117 +164,141 @@ async def my_event_handler(event):
             comment_id = cm.group(1)
 
     try:
-        if private_chat_id:
-            chat_id = int(f"-100{private_chat_id}")
-        else:
-            chat_id = public_username
+        chat_ref = int(f"-100{private_chat_id}") if private_chat_id else public_username
 
         if comment_id:
-            # 评论区文件：评论实际存放在频道关联的「讨论群」里，而非频道本身。
-            # ?comment=xxx 中的 xxx 是「讨论群内」的消息 id。
-            # 步骤：用帖子定位讨论串 → 从返回的 chats 里取讨论群(megagroup)
-            #       → 用 comment_id 到讨论群里取那条评论。
+            # 评论区文件存放在频道关联的「讨论群」里，?comment=xxx 是讨论群内的消息 id。
             await status_msg.edit("🔄 **正在解析评论区...**")
-            discussion = await client(GetDiscussionMessageRequest(peer=chat_id, msg_id=msg_id))
-            # 关联讨论群在 chats 里，且带完整 access_hash，实体解析才可靠
+            discussion = await client(GetDiscussionMessageRequest(peer=chat_ref, msg_id=msg_id))
             disc_group = next(
                 (c for c in discussion.chats if getattr(c, 'megagroup', False)),
-                None
+                None,
             )
             if disc_group is None:
                 await status_msg.edit("❌ **解析失败**：该频道未开启评论（找不到关联讨论群）。")
                 return
+            search_chat = disc_group
             source_msg = await client.get_messages(disc_group, ids=int(comment_id))
         else:
-            source_msg = await client.get_messages(chat_id, ids=msg_id)
+            search_chat = chat_ref
+            source_msg = await client.get_messages(chat_ref, ids=msg_id)
 
         if not source_msg or not source_msg.media:
             await status_msg.edit("❌ **解析失败**：找不到消息，或者该消息中没有可下载的媒体文件。")
             return
 
-        # 受保护内容时使用的回退方案：下载到本地 → 重新上传
-        async def download_to_local():
-            download_dir = './downloads'
-            if not os.path.exists(download_dir):
-                os.makedirs(download_dir)
+        # 若链接指向相册，取出整组一起处理（保留合并效果）
+        msgs = await get_album(search_chat, source_msg)
 
-            # 下载，绑定下载进度条
-            dl_progress = ProgressBar(status_msg, "📥 **正在从源频道下载到服务器...**")
-            return await client.download_media(
-                source_msg,
-                file=download_dir + '/',
-                progress_callback=dl_progress.callback
-            )
-
-        # ===== 模式 A：未配置 TARGET_CHAT，仅下载到本地 =====
-        if TARGET_CHAT is None:
-            file_path = await download_to_local()
-            await status_msg.edit(
-                "🎉 **下载完成！**\n"
-                f"✅ 文件已保存到服务器：\n`{file_path}`"
-            )
+        # ===== 模式 A：未配置备份目标，仅下载到本地 =====
+        if not TARGET_IDS:
+            os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+            saved = []
+            for i, m in enumerate(msgs):
+                title = "📥 **正在从源频道下载到服务器...**"
+                if len(msgs) > 1:
+                    title = f"📥 **正在下载第 {i + 1}/{len(msgs)} 个...**"
+                p = await client.download_media(
+                    m, file=DOWNLOAD_DIR + "/", progress_callback=ProgressBar(status_msg, title).callback
+                )
+                if p:
+                    saved.append(p)
+            paths = "\n".join(f"`{p}`" for p in saved)
+            await status_msg.edit(f"🎉 **下载完成！**\n✅ 文件已保存到服务器：\n{paths}")
             return
 
-        # ===== 模式 B：已配置 TARGET_CHAT，转发 / 下载重传 =====
-        async def download_and_reupload():
-            file_path = await download_to_local()
-
-            await status_msg.edit("✅ **下载到服务器完成！**\n🚀 准备开始上传...")
-            time.sleep(1)  # 停顿1秒，让用户看清楚过渡状态
-
-            # 复用原始媒体的属性（视频宽高/时长/可流式播放、文件名、mime 类型）。
-            # 否则 Telethon 重传时无法识别视频元数据，会导致：
-            #   1) 视频变形为正方形（缺宽高）  2) 必须下完才能播放（缺 supports_streaming）
-            send_kwargs = {}
-            doc = getattr(source_msg, 'document', None)
-            if doc:
-                send_kwargs['attributes'] = doc.attributes
-                send_kwargs['mime_type'] = doc.mime_type
-
-            # 上传，绑定上传进度条
-            ul_progress = ProgressBar(status_msg, "📤 **正在将文件上传到目标频道...**")
-            await client.send_file(
-                TARGET_CHAT,
-                file_path,
-                caption=source_msg.text if source_msg.text else "",
-                progress_callback=ul_progress.callback,
-                **send_kwargs
-            )
-
-            # 清理并发送最终成功提示
-            os.remove(file_path)
-            await status_msg.edit(
-                "🎉 转发成功"
-            )
-
-        # 步骤 0：优先尝试直接转发（零下载、零本地占用）
-        # noforwards 为 False 表示源频道未开启"禁止转发/限制保存"
-        if not source_msg.noforwards:
-            try:
-                await status_msg.edit("🚀 **该消息允许转发，正在直接转发...**")
-                await client.forward_messages(
-                    TARGET_CHAT,
-                    source_msg,
-                    drop_author=True  # 无引用转发：不显示"转发自 xxx"
-                )
-                await status_msg.edit(
-                    "🎉 **转发任务完成！**\n"
-                    "✅ 已直接无引用转发，无需下载上传"
-                )
-                return
-            except ChatForwardsRestrictedError:
-                # 兜底：noforwards 漏判或源频道临时限制，回退到下载重传
-                await status_msg.edit("⚠️ **直接转发被限制，改用下载重传方案...**")
-
-        # 受保护内容（noforwards=True 或转发被拒）：走下载 → 重新上传
-        await download_and_reupload()
+        # ===== 模式 B：无引用镜像到全部备份目标 =====
+        await forwarder.mirror(
+            client, TARGET_IDS, msgs, registry,
+            status_msg=status_msg, download_dir=DOWNLOAD_DIR,
+        )
 
     except ValueError as ve:
         await status_msg.edit(f"❌ **权限错误**：无法访问源频道。\n`{ve}`")
     except Exception as e:
         await status_msg.edit(f"❌ **发生未知错误**：\n`{str(e)}`")
 
-# ================= 5. 启动程序 =================
+
+# ================= 5. 事件处理：路由 =================
+async def on_new_message(event):
+    """单条消息：收藏夹处理链接/磁力/视频；备份群只处理视频。相册交给 on_album。"""
+    msg = event.message
+
+    # 防回环：机器人自己发出/转发出去的消息直接跳过
+    if registry.contains(event.chat_id, msg.id):
+        return
+    # 成组消息（相册）交给 on_album，避免重复处理
+    if getattr(msg, "grouped_id", None) is not None:
+        return
+
+    if event.chat_id == ME_ID:
+        text = msg.raw_text or ""
+        magnet = re.search(MAGNET_RE, text)
+        if magnet:
+            await handle_magnet(event, magnet.group(0))
+            return
+        if re.search(LINK_PATTERN, text):
+            await handle_link(event)
+            return
+        # 收藏夹里的普通视频：无引用转发到全部备份目标
+        if is_video_message(msg):
+            await forwarder.mirror(
+                client, compute_targets(event.chat_id, ME_ID, TARGET_IDS), [msg], registry
+            )
+        return
+
+    # 备份群 A/B/C：只转视频，静默无引用转发到其余成员
+    if is_video_message(msg):
+        await forwarder.mirror(
+            client, compute_targets(event.chat_id, ME_ID, TARGET_IDS), [msg], registry
+        )
+
+
+async def on_album(event):
+    """相册（合并视频/图文）：只要含视频就整组无引用转发。"""
+    if any(registry.contains(event.chat_id, m.id) for m in event.messages):
+        return
+    if not any(is_video_message(m) for m in event.messages):
+        return
+    targets = compute_targets(event.chat_id, ME_ID, TARGET_IDS)
+    await forwarder.mirror(client, targets, list(event.messages), registry)
+
+
+# ================= 6. 启动程序 =================
+async def _amain():
+    global ME_ID, TARGET_IDS
+
+    await client.start()
+    me = await client.get_me()
+    ME_ID = me.id
+
+    # 预热实体缓存，使「按 id 解析频道/群组」可用（否则新会话可能报找不到实体）
+    try:
+        await client.get_dialogs()
+    except Exception as e:
+        print(f"⚠️ 预取会话列表失败（可能影响按 id 解析目标）：{e}")
+
+    # 规范化每个备份目标，并组成监听列表 = 收藏夹 + 全部目标
+    monitor = ['me']
+    for raw in TARGET_CHATS:
+        try:
+            ent = await client.get_entity(raw)
+            TARGET_IDS.append(utils.get_peer_id(ent))
+            monitor.append(ent)
+        except Exception as e:
+            print(f"⚠️ 无法访问备份目标 {raw}，已跳过：{e}")
+
+    client.add_event_handler(on_album, events.Album(chats=monitor))
+    client.add_event_handler(on_new_message, events.NewMessage(chats=monitor))
+
+    if TARGET_IDS:
+        print(f"🚀 UserBot 已启动：监听 收藏夹 + {len(TARGET_IDS)} 个备份目标，互为无引用转发视频")
+    else:
+        print("🚀 UserBot 已启动：仅下载模式（未配置 TARGET_CHAT），只监听收藏夹")
+
+    await client.run_until_disconnected()
+
+
 if __name__ == '__main__':
     print("🚀 UserBot 启动中…")
     try:
@@ -265,8 +309,6 @@ if __name__ == '__main__':
         print(f"⚠️ aria2 启动失败，磁力下载不可用（t.me 链接仍可用）：{e}")
 
     try:
-        client.start()
-        print("🚀 UserBot 已启动并正在监听收藏夹...")
-        client.run_until_disconnected()
+        client.loop.run_until_complete(_amain())
     finally:
         aria2.stop()

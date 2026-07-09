@@ -12,6 +12,33 @@ def is_video(name):
     return os.path.splitext(name)[1].lower() in VIDEO_EXTS
 
 
+def is_video_message(message):
+    """判断一条 Telegram 消息是否「视频文件」。
+
+    命中：以视频形式发送的消息（message.video），或以文件形式发送但 mime 为
+    video/* 或扩展名在 VIDEO_EXTS 里的文档。
+    排除：GIF 动图（message.gif）、圆形视频笔记（message.video_note）——它们不算
+    需要备份的视频文件。
+    鸭子类型读取属性，方便脱离 telethon 用假对象做单测。
+    """
+    if message is None or getattr(message, "media", None) is None:
+        return False
+    if getattr(message, "gif", None) or getattr(message, "video_note", None):
+        return False
+    if getattr(message, "video", None):
+        return True
+    doc = getattr(message, "document", None)
+    if doc is not None:
+        mime = getattr(doc, "mime_type", None) or ""
+        if mime.startswith("video/"):
+            return True
+        f = getattr(message, "file", None)
+        name = getattr(f, "name", None) if f is not None else None
+        if name and is_video(name):
+            return True
+    return False
+
+
 def plan_files(files, max_file_bytes):
     """根据 aria2.getFiles 的文件清单，决定哪些下载、哪些跳过。
 

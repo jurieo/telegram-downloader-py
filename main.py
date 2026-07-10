@@ -242,16 +242,22 @@ async def on_new_message(event):
             return
         # 收藏夹里的普通图片/视频：无引用转发到全部备份目标
         if is_media_message(msg):
-            await forwarder.mirror(
-                client, compute_targets(event.chat_id, ME_ID, TARGET_IDS), [msg], registry
-            )
+            try:
+                await forwarder.mirror(
+                    client, compute_targets(event.chat_id, ME_ID, TARGET_IDS), [msg], registry
+                )
+            except Exception as e:
+                print(f"⚠️ 收藏夹媒体转发失败（id={msg.id}）：{e}")
         return
 
     # 备份群 A/B/C：只转图片/视频，静默无引用转发到其余成员
     if is_media_message(msg):
-        await forwarder.mirror(
-            client, compute_targets(event.chat_id, ME_ID, TARGET_IDS), [msg], registry
-        )
+        try:
+            await forwarder.mirror(
+                client, compute_targets(event.chat_id, ME_ID, TARGET_IDS), [msg], registry
+            )
+        except Exception as e:
+            print(f"⚠️ 备份群媒体转发失败（chat={event.chat_id}, id={msg.id}）：{e}")
 
 
 async def on_album(event):
@@ -261,7 +267,10 @@ async def on_album(event):
     if not any(is_media_message(m) for m in event.messages):
         return
     targets = compute_targets(event.chat_id, ME_ID, TARGET_IDS)
-    await forwarder.mirror(client, targets, list(event.messages), registry)
+    try:
+        await forwarder.mirror(client, targets, list(event.messages), registry)
+    except Exception as e:
+        print(f"⚠️ 相册转发失败（chat={event.chat_id}）：{e}")
 
 
 # ================= 6. 启动程序 =================
@@ -292,7 +301,7 @@ async def _amain():
     client.add_event_handler(on_new_message, events.NewMessage(chats=monitor))
 
     if TARGET_IDS:
-        print(f"🚀 UserBot 已启动：监听 收藏夹 + {len(TARGET_IDS)} 个备份目标，互为无引用转发视频")
+        print(f"🚀 UserBot 已启动：监听 收藏夹 + {len(TARGET_IDS)} 个备份目标，互为无引用转发图片/视频")
     else:
         print("🚀 UserBot 已启动：仅下载模式（未配置 TARGET_CHAT），只监听收藏夹")
 

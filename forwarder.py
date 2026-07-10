@@ -5,11 +5,82 @@
 - 需要发多个目标时，先传到第一个目标，再从它服务器端转给其余目标，避免重复上传。
 - 每次发送后立刻把返回消息记入 registry，防止互为备份时死循环。
 """
+import asyncio
 import os
+import time
 
-from telethon.errors import ChatForwardsRestrictedError
+from telethon.errors import ChatForwardsRestrictedError, FloodWaitError
 
 from progress import ProgressBar
+
+# ================= 限流保护与提醒 =================
+# 命中 FloodWait 后进入全局「冷却」：冷却期内跳过所有转发，避免在惩罚期继续发
+# 请求反而把等待时间越撞越长。冷却到期后自动恢复。
+_flood_until = 0.0        # 冷却截止时间戳（time.time()）
+_cooldown_active = False  # 是否处于冷却，用于「进入/恢复」各提醒一次
+_last_forward = 0.0       # 已预约的下一次转发时间戳，配合 FORWARD_INTERVAL 做削峰限速
+
+# 每次 forward_messages 之间的最小间隔（秒），降低瞬时突发触发限流的概率；
+# 设 0 关闭限速（测试用）。可用环境变量 FORWARD_INTERVAL 调整。
+FORWARD_INTERVAL = float(os.getenv("FORWARD_INTERVAL", "3"))
+
+
+def reset_flood_state():
+    """重置限流冷却与限速时钟（测试用）。"""
+    global _flood_until, _cooldown_active, _last_forward
+    _flood_until = 0.0
+    _cooldown_active = False
+    _last_forward = 0.0
+
+
+def in_cooldown():
+    """当前是否处于转发限流冷却期。"""
+    return time.time() < _flood_until
+
+
+def cooldown_remaining():
+    """冷却剩余秒数（已过期返回 0）。"""
+    return max(0, int(_flood_until - time.time()))
+
+
+async def _notify(client, text):
+    """给收藏夹（Saved Messages）发一条状态提醒；失败不影响主流程。"""
+    try:
+        await client.send_message("me", text)
+    except Exception as e:
+        print(f"⚠️ 发送状态提醒失败：{e}")
+
+
+async def _enter_cooldown(client, seconds):
+    """进入限流冷却，并往收藏夹发一次「已暂停」提醒。"""
+    global _flood_until, _cooldown_active
+    _flood_until = time.time() + seconds
+    _cooldown_active = True
+    mins = max(1, round(seconds / 60))
+    print(f"⏳ 转发触发限流：需等待 {seconds}s，进入冷却，期间跳过转发")
+    await _notify(
+        client,
+        f"⏳ **转发被限流，已暂停**\n"
+        f"需等待约 {mins} 分钟（{seconds}s），这段时间新的图片/视频**暂停转发**"
+        f"（源消息仍在，不会丢失）。到期后自动恢复并再通知你。",
+    )
+
+
+async def _pace():
+    """连续转发之间强制留出 FORWARD_INTERVAL 间隔（削峰限速）。
+
+    用「预约下一个时隙」的方式：读改 _last_forward 之间没有 await，在单事件循环里
+    是原子的，因此无需锁也能给并发的转发排队，避免瞬时突发触发限流。
+    """
+    global _last_forward
+    if FORWARD_INTERVAL <= 0:
+        return
+    now = time.time()
+    scheduled = max(now, _last_forward + FORWARD_INTERVAL)
+    _last_forward = scheduled
+    delay = scheduled - now
+    if delay > 0:
+        await asyncio.sleep(delay)
 
 
 def _with_media(messages):
@@ -24,30 +95,54 @@ async def mirror(client, targets, messages, registry, status_msg=None, download_
 
     优先零下载直接转发；源受保护（禁转）时下载后重传。status_msg 非空（me 的链接
     流程）时显示进度与结果，否则静默（A/B/C 备份群）。返回是否有实际转发。
+    命中 FloodWait 限流时进入冷却并跳过（返回 False），期间的调用直接跳过。
     """
+    global _cooldown_active
     msgs = _with_media(messages)
     if not msgs or not targets:
         return False
 
-    restricted = any(getattr(m, "noforwards", False) for m in msgs)
-    if not restricted:
-        try:
-            await _direct_forward(client, targets, msgs, registry)
-            if status_msg:
-                await status_msg.edit(f"🎉 **已无引用转发到 {len(targets)} 个目标**")
-            return True
-        except ChatForwardsRestrictedError:
-            # noforwards 漏判或源临时限制：回退到下载重传
-            if status_msg:
-                await status_msg.edit("⚠️ **直接转发被限制，改用下载重传方案...**")
+    # 处于限流冷却期：直接跳过，不发任何转发请求（源消息仍在，不算丢失）
+    if in_cooldown():
+        secs = cooldown_remaining()
+        print(f"⏳ 转发限流冷却中（剩余约 {secs}s），跳过本组 {len(msgs)} 条")
+        if status_msg:
+            await status_msg.edit(f"⏳ **转发被限流，冷却剩余约 {secs}s，已跳过本次**")
+        return False
 
-    await _download_and_reupload(client, targets, msgs, registry, status_msg, download_dir)
-    return True
+    # 冷却刚结束：通知已恢复
+    if _cooldown_active:
+        _cooldown_active = False
+        await _notify(client, "✅ **转发已恢复**（限流冷却结束）。")
+
+    restricted = any(getattr(m, "noforwards", False) for m in msgs)
+    try:
+        if not restricted:
+            try:
+                await _direct_forward(client, targets, msgs, registry)
+                if status_msg:
+                    await status_msg.edit(f"🎉 **已无引用转发到 {len(targets)} 个目标**")
+                return True
+            except ChatForwardsRestrictedError:
+                # noforwards 漏判或源临时限制：回退到下载重传
+                if status_msg:
+                    await status_msg.edit("⚠️ **直接转发被限制，改用下载重传方案...**")
+
+        await _download_and_reupload(client, targets, msgs, registry, status_msg, download_dir)
+        return True
+    except FloodWaitError as e:
+        await _enter_cooldown(client, e.seconds)
+        if status_msg:
+            await status_msg.edit(
+                f"⏳ **转发被限流（需等待约 {e.seconds}s），已进入冷却并跳过本次**"
+            )
+        return False
 
 
 async def _direct_forward(client, targets, msgs, registry):
     """零下载直接转发：整组一次性转发以保留相册合并，drop_author 去引用。"""
     for target in targets:
+        await _pace()
         sent = await client.forward_messages(target, msgs, drop_author=True)
         registry.add_messages(sent)
 
@@ -100,6 +195,7 @@ async def _download_and_reupload(client, targets, msgs, registry, status_msg, do
 
     # 从首个目标服务器端转给其余目标，零重复上传
     for target in targets[1:]:
+        await _pace()
         s2 = await client.forward_messages(target, sent, drop_author=True)
         registry.add_messages(s2)
 

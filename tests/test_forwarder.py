@@ -1,5 +1,8 @@
 import asyncio
+import time
 from types import SimpleNamespace
+
+from telethon.errors import FloodWaitError
 
 import forwarder
 from routing import SentRegistry
@@ -8,12 +11,13 @@ B, C = -100222, -100333
 
 
 class FakeClient:
-    """记录 forward_messages / send_file / download_media 调用的假客户端。"""
+    """记录 forward_messages / send_file / download_media / send_message 调用的假客户端。"""
 
     def __init__(self):
         self.forwards = []   # [(target, messages, drop_author)]
         self.sends = []      # [(target, file, caption)]
         self.downloads = []  # [message]
+        self.messages = []   # [(peer, text)] —— send_message（状态提醒）
         self._id = 1000
 
     def _new(self, target):
@@ -36,6 +40,25 @@ class FakeClient:
     async def download_media(self, message, file=None, progress_callback=None):
         self.downloads.append(message)
         return (file or "") + f"f{len(self.downloads)}.mp4"
+
+    async def send_message(self, peer, text):
+        self.messages.append((peer, text))
+        return self._new(peer)
+
+
+class FloodOnceClient(FakeClient):
+    """第一次 forward_messages 抛 FloodWait，之后正常（模拟限流）。"""
+
+    def __init__(self, seconds=1447):
+        super().__init__()
+        self.seconds = seconds
+        self._flooded = False
+
+    async def forward_messages(self, target, messages, drop_author=None):
+        if not self._flooded:
+            self._flooded = True
+            raise FloodWaitError(request=None, capture=self.seconds)
+        return await super().forward_messages(target, messages, drop_author=drop_author)
 
 
 def _msg(noforwards=False, media=True, grouped_id=None, text="", mid=1):
@@ -106,3 +129,56 @@ def test_noop_without_targets_or_media():
     assert run(forwarder.mirror(c, [], [_msg()], reg)) is False
     assert run(forwarder.mirror(c, [B], [_msg(media=False)], reg)) is False
     assert c.forwards == [] and c.sends == [] and c.downloads == []
+
+
+# ---------- FloodWait 限流冷却 ----------
+def test_floodwait_enters_cooldown_and_notifies():
+    c = FloodOnceClient(seconds=1447)
+    reg = SentRegistry()
+    ok = run(forwarder.mirror(c, [B, C], [_msg()], reg))
+    assert ok is False                     # 命中限流：本次未成功转发
+    assert forwarder.in_cooldown()         # 进入冷却
+    # 往收藏夹发了一条「已暂停」提醒
+    assert len(c.messages) == 1
+    assert c.messages[0][0] == "me" and "暂停" in c.messages[0][1]
+
+
+def test_skips_all_forwards_while_in_cooldown():
+    c = FloodOnceClient(seconds=1447)
+    reg = SentRegistry()
+    run(forwarder.mirror(c, [B, C], [_msg()], reg))     # 触发冷却
+    forwards_before = len(c.forwards)
+    notify_before = len(c.messages)
+    # 冷却期内再来消息：直接跳过，不产生任何新的转发请求
+    ok = run(forwarder.mirror(c, [B, C], [_msg(mid=2)], reg))
+    assert ok is False
+    assert len(c.forwards) == forwards_before
+    assert len(c.messages) == notify_before   # 跳过时不重复刷提醒
+
+
+def test_resume_after_cooldown_notifies_and_forwards():
+    c = FloodOnceClient(seconds=1447)
+    reg = SentRegistry()
+    run(forwarder.mirror(c, [B, C], [_msg()], reg))     # 触发冷却
+    forwarder.reset_flood_state()                        # 模拟冷却到期
+    forwarder._cooldown_active = True                    # 但仍标记「刚从冷却出来」
+    ok = run(forwarder.mirror(c, [B], [_msg(mid=3)], reg))
+    assert ok is True
+    # 发了「已恢复」提醒，且恢复了正常转发
+    assert any("恢复" in text for _, text in c.messages)
+    assert len(c.forwards) >= 1
+
+
+def test_pace_enforces_interval_between_forwards():
+    c = FakeClient()
+    reg = SentRegistry()
+    forwarder.FORWARD_INTERVAL = 0.05
+    try:
+        start = time.monotonic()
+        run(forwarder.mirror(c, [B, C], [_msg()], reg))   # 两个目标 → 至少间隔一次
+        elapsed = time.monotonic() - start
+    finally:
+        forwarder.FORWARD_INTERVAL = 0
+    assert len(c.forwards) == 2
+    assert elapsed >= 0.05
+

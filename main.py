@@ -6,7 +6,7 @@ from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
 from progress import ProgressBar
 from aria2_client import Aria2Client
-from filters import is_video_message
+from filters import is_media_message
 from routing import parse_target_chats, compute_targets, SentRegistry
 import forwarder
 import media_upload
@@ -221,7 +221,7 @@ async def handle_link(event):
 
 # ================= 5. 事件处理：路由 =================
 async def on_new_message(event):
-    """单条消息：收藏夹处理链接/磁力/视频；备份群只处理视频。相册交给 on_album。"""
+    """单条消息：收藏夹处理链接/磁力/图片视频；备份群只处理图片视频。相册交给 on_album。"""
     msg = event.message
 
     # 防回环：机器人自己发出/转发出去的消息直接跳过
@@ -240,25 +240,25 @@ async def on_new_message(event):
         if re.search(LINK_PATTERN, text):
             await handle_link(event)
             return
-        # 收藏夹里的普通视频：无引用转发到全部备份目标
-        if is_video_message(msg):
+        # 收藏夹里的普通图片/视频：无引用转发到全部备份目标
+        if is_media_message(msg):
             await forwarder.mirror(
                 client, compute_targets(event.chat_id, ME_ID, TARGET_IDS), [msg], registry
             )
         return
 
-    # 备份群 A/B/C：只转视频，静默无引用转发到其余成员
-    if is_video_message(msg):
+    # 备份群 A/B/C：只转图片/视频，静默无引用转发到其余成员
+    if is_media_message(msg):
         await forwarder.mirror(
             client, compute_targets(event.chat_id, ME_ID, TARGET_IDS), [msg], registry
         )
 
 
 async def on_album(event):
-    """相册（合并视频/图文）：只要含视频就整组无引用转发。"""
+    """相册（合并视频/图文）：只要含图片或视频就整组无引用转发。"""
     if any(registry.contains(event.chat_id, m.id) for m in event.messages):
         return
-    if not any(is_video_message(m) for m in event.messages):
+    if not any(is_media_message(m) for m in event.messages):
         return
     targets = compute_targets(event.chat_id, ME_ID, TARGET_IDS)
     await forwarder.mirror(client, targets, list(event.messages), registry)

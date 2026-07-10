@@ -1,15 +1,25 @@
 import os
 
-# 只处理视频文件（音频、图片、字幕、nfo 等一律忽略，连下载都不下）
+# 下载时只处理视频文件（音频、图片、字幕、nfo 等一律忽略，连下载都不下）
 VIDEO_EXTS = {
     ".mp4", ".mkv", ".avi", ".mov", ".webm", ".ts", ".flv", ".wmv",
     ".m4v", ".mpg", ".mpeg", ".rmvb", ".rm", ".3gp", ".vob", ".m2ts", ".mts",
+}
+
+# 图片扩展名（仅用于「转发」判断，下载流程不涉及）
+IMAGE_EXTS = {
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif",
 }
 
 
 def is_video(name):
     """按扩展名判断是否视频文件（大小写不敏感）。"""
     return os.path.splitext(name)[1].lower() in VIDEO_EXTS
+
+
+def is_image(name):
+    """按扩展名判断是否图片文件（大小写不敏感）。"""
+    return os.path.splitext(name)[1].lower() in IMAGE_EXTS
 
 
 def is_video_message(message):
@@ -37,6 +47,37 @@ def is_video_message(message):
         if name and is_video(name):
             return True
     return False
+
+
+def is_image_message(message):
+    """判断一条 Telegram 消息是否「图片」。
+
+    命中：以图片形式发送的消息（message.photo），或以文件形式发送但 mime 为
+    image/* 或扩展名在 IMAGE_EXTS 里的文档。
+    排除：贴纸（message.sticker）、GIF 动图（message.gif）——它们不算需要备份的图片。
+    鸭子类型读取属性，方便脱离 telethon 用假对象做单测。
+    """
+    if message is None or getattr(message, "media", None) is None:
+        return False
+    if getattr(message, "sticker", None) or getattr(message, "gif", None):
+        return False
+    if getattr(message, "photo", None):
+        return True
+    doc = getattr(message, "document", None)
+    if doc is not None:
+        mime = getattr(doc, "mime_type", None) or ""
+        if mime.startswith("image/"):
+            return True
+        f = getattr(message, "file", None)
+        name = getattr(f, "name", None) if f is not None else None
+        if name and is_image(name):
+            return True
+    return False
+
+
+def is_media_message(message):
+    """判断一条消息是否为需要转发的媒体：图片或视频。"""
+    return is_video_message(message) or is_image_message(message)
 
 
 def plan_files(files, max_file_bytes):

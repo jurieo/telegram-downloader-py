@@ -165,7 +165,7 @@ async def handle_twitter(event, url):
         )
         uploaded, failed, sent = await media_upload.upload_videos(
             client, TARGET_IDS[0], result.downloaded_files, status_msg,
-            MAX_UPLOAD_CONCURRENCY, registry=registry,
+            MAX_UPLOAD_CONCURRENCY, registry=registry, caption="",
         )
 
         # 从首个目标转给其余目标，零重复上传，drop_author 去引用

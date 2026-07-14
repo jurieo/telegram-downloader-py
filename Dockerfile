@@ -8,9 +8,9 @@ ENV TZ=Asia/Shanghai \
 
 WORKDIR /app
 
-# 系统依赖：aria2 用于磁力链接下载（amd64/arm64 均有，体积小）
+# 系统依赖：aria2 用于磁力链接下载；ffmpeg 用于 yt-dlp 合并推特视频的分离视频/音频流(HLS)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends aria2 \
+    && apt-get install -y --no-install-recommends aria2 ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # 先装依赖，利用 Docker 层缓存（requirements 不变则不重装）

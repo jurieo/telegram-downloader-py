@@ -7,6 +7,7 @@
 - 🔁 **多源互为备份**:配置一组频道/群组,任意一个里出现的视频都无引用转发到其余成员(收藏夹 `me` 里的视频/链接则转发到全部成员)
 - 🎞️ **合并视频/相册**:整组(媒体组)一次性转发,保留「合并」效果不拆散
 - 🔗 **发链接即用**:往收藏夹粘贴 `https://t.me/...` 消息链接,自动识别并处理
+- 🐦 **推特/X 视频下载**:往收藏夹粘贴公开推文链接(`https://x.com/.../status/...`),用 yt-dlp 下载视频并上传到备份目标(仅公开推文、不需登录)
 - 🧲 **磁力链接下载**:粘贴 `magnet:?xt=...` 磁力链接,用 aria2 下载种子里的**视频文件**并上传到备份目标(只下视频、自动跳过超大文件)
 - 🚀 **智能转发**:源允许转发时,直接**无引用转发**,零下载零流量;受保护内容自动回退为「下载到本地 → 重新上传」
 - ♻️ **防回环**:同一账号在多个备份群间转发不会死循环
@@ -89,9 +90,15 @@ python main.py
    - 只下载/上传视频(音频、图片、字幕、nfo 等忽略,也不下载)
    - 单文件超过 `MAX_FILE_SIZE_GB`(默认 4GB)会被跳过,并在消息里说明原因
    - 多个视频按 `MAX_UPLOAD_CONCURRENCY` 并发上传
-4. 机器人会回复一条状态消息,并实时更新进度,直至完成
+4. 或者粘贴一个**公开推特/X 推文链接**(`https://x.com/<用户>/status/<id>`,链接后面带 `/video/1?s=...` 等参数也可):程序会用 yt-dlp 下载推文里的视频并上传到目标频道
+   - 双通道:优先 [fxtwitter](https://github.com/FixTweet/FxTwitter) 公共 API 取 mp4 直链(快、对 X 新视频管线稳定);fxtwitter 不可用时回退 yt-dlp 官方解析兜底
+   - 只支持**公开推文**(不接 cookies);需登录才能看的(NSFW/受保护/私密)会提示无法下载
+   - 推文内**图片**不在下载范围(yt-dlp 面向视频)
+5. 机器人会回复一条状态消息,并实时更新进度,直至完成
 
-> 🧲 本地运行磁力功能需要系统已安装 `aria2`(`apt install aria2` / `brew install aria2`);Docker 镜像已内置,无需额外安装。
+> 🧲 本地运行磁力功能需要系统已安装 `aria2`(`apt install aria2` / `brew install aria2`)。
+> 🐦 本地运行推特下载需要 `ffmpeg`(`apt install ffmpeg` / `brew install ffmpeg`,用于合并高清视频的分离视频/音频流)。
+> Docker 镜像已内置 aria2 与 ffmpeg,无需额外安装。
 
 ## 🐳 Docker 部署(Docker Compose)
 
@@ -164,8 +171,9 @@ docker compose down         # 停止并移除容器
 ├── filters.py                # 视频识别:文件名 + 消息是否视频(纯函数)
 ├── progress.py               # 进度条:单文件进度 + 并发上传聚合进度
 ├── aria2_client.py           # aria2c 守护进程管理 + JSON-RPC + 磁力下载
+├── ytdlp_client.py           # 推特/X 视频下载:fxtwitter 直链优先 + yt-dlp 官方解析兜底(线程池执行 + 进度轮询)
 ├── media_upload.py           # 视频并发上传 + FloodWait 退避
-├── scripts/                  # 联调脚本(aria2_selftest.py,不依赖 Telegram)
+├── scripts/                  # 联调脚本(aria2_selftest.py / ytdlp_selftest.py,不依赖 Telegram)
 ├── tests/                    # 纯逻辑单元测试(pytest)
 ├── requirements.txt          # Python 依赖
 ├── Dockerfile                # 镜像构建(内置 aria2)

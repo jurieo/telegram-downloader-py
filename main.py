@@ -10,6 +10,7 @@ from filters import is_media_message
 from routing import parse_target_chats, compute_targets, SentRegistry
 import forwarder
 import media_upload
+import ytdlp_client
 
 # ================= 1. 读取配置 =================
 load_dotenv()
@@ -39,10 +40,15 @@ client.flood_sleep_threshold = 120
 aria2 = Aria2Client(DOWNLOAD_DIR, stall_timeout=TORRENT_STALL_TIMEOUT)
 ARIA2_READY = False
 
+# yt-dlp 下载引擎（推特/X 链接用）；纯 Python 库，无守护进程，无需 start/stop
+ytdlp = ytdlp_client.Ytdlp(DOWNLOAD_DIR)
+
 # 磁力链接 / 消息链接识别
 MAGNET_RE = r'magnet:\?xt=urn:btih:[^\s]+'
 # 支持普通消息链接、帖子评论链接（?comment=xxx）、以及话题内消息链接
 LINK_PATTERN = r'https?://t\.me/(?:c/(\d+)/|([\w_]+)/)(\d+)(?:/(\d+))?(\?\S*)?'
+# 推特/X 推文链接（限定 /status/<id>，避免误抓主页/个人页；仅公开推文）
+TWITTER_RE = r'https?://(?:www\.|mobile\.)?(?:twitter|x)\.com/[^\s/]+/status/\d+'
 
 # ================= 运行时状态（在 _amain 里解析赋值） =================
 ME_ID = None            # 本账号自身 id（收藏夹 me 的 chat_id）
@@ -125,6 +131,67 @@ async def handle_magnet(event, magnet):
         print(f"⚠️ 磁力下载失败：{detail}")
         await status_msg.edit(f"❌ **磁力下载失败**：\n`{detail}`")
         await aria2.cleanup(result)
+
+
+# ================= 3.5 推特/X 链接处理（仅收藏夹触发） =================
+async def handle_twitter(event, url):
+    status_msg = await event.reply("🔗 **收到推特链接，正在解析…**")
+    max_bytes = int(MAX_FILE_SIZE_GB * (1024 ** 3))
+    result = None
+    try:
+        result = await ytdlp.download(url, status_msg, max_bytes)
+
+        # 没有可上传的视频（纯图文推文，或视频超限）
+        if not result.downloaded_files:
+            msg = "❌ **未找到可下载的视频**"
+            if result.skipped:
+                msg += "\n⏭️ 以下视频因过大被跳过：\n" + _format_skipped(result.skipped)
+            await status_msg.edit(msg)
+            await ytdlp.cleanup(result)
+            return
+
+        # ===== 模式 A：未配置备份目标，仅下载到本地（不上传、不删除） =====
+        if not TARGET_IDS:
+            paths = "\n".join(f"`{p}`" for p in result.downloaded_files)
+            await status_msg.edit(
+                f"🎉 **下载完成！** 共 {len(result.downloaded_files)} 个视频\n"
+                f"✅ 已保存到服务器：\n{paths}"
+            )
+            return
+
+        # ===== 模式 B：上传到首个目标，再服务器端扇出到其余目标 =====
+        await status_msg.edit(
+            f"✅ **下载完成，共 {len(result.downloaded_files)} 个视频，开始上传…**"
+        )
+        uploaded, failed, sent = await media_upload.upload_videos(
+            client, TARGET_IDS[0], result.downloaded_files, status_msg,
+            MAX_UPLOAD_CONCURRENCY, registry=registry,
+        )
+
+        # 从首个目标转给其余目标，零重复上传，drop_author 去引用
+        for target in TARGET_IDS[1:]:
+            for m in sent:
+                try:
+                    s2 = await client.forward_messages(target, m, drop_author=True)
+                    registry.add_messages(s2)
+                except Exception as e:
+                    print(f"⚠️ 推特扇出到 {target} 失败：{e}")
+
+        summary = f"🎉 **完成！已上传 {uploaded} 个视频到 {len(TARGET_IDS)} 个目标**"
+        if result.skipped:
+            summary += "\n⏭️ 跳过：\n" + _format_skipped(result.skipped)
+        if failed:
+            summary += "\n⚠️ 上传失败：\n" + "\n".join(
+                f"  • {name}（{reason}）" for name, reason in failed
+            )
+        await status_msg.edit(summary)
+
+        await ytdlp.cleanup(result)
+    except Exception as e:
+        detail = str(e).strip() or type(e).__name__
+        print(f"⚠️ 推特下载失败：{detail}")
+        await status_msg.edit(f"❌ **推特下载失败**：\n`{detail}`")
+        await ytdlp.cleanup(result)
 
 
 # ================= 4. 链接处理（仅收藏夹触发） =================
@@ -239,6 +306,10 @@ async def on_new_message(event):
             return
         if re.search(LINK_PATTERN, text):
             await handle_link(event)
+            return
+        tw = re.search(TWITTER_RE, text)
+        if tw:
+            await handle_twitter(event, tw.group(0))
             return
         # 收藏夹里的普通图片/视频：无引用转发到全部备份目标
         if is_media_message(msg):

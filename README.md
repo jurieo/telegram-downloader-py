@@ -102,9 +102,8 @@ python main.py
    - 推文内**图片**不在下载范围(yt-dlp 面向视频)
 5. 机器人会回复一条状态消息,并实时更新进度,直至完成
 
-> 🧲 本地运行磁力功能需要系统已安装 `aria2`(`apt install aria2` / `brew install aria2`)。
-> 🐦 本地运行推特下载需要 `ffmpeg`(`apt install ffmpeg` / `brew install ffmpeg`,用于合并高清视频的分离视频/音频流)。
-> Docker 镜像已内置 aria2 与 ffmpeg,无需额外安装。
+> 🧲 本地运行磁力功能需要系统已安装 `aria2`(`apt install aria2` / `brew install aria2`);Docker 镜像已内置。
+> 🐦 推特下载**通常不需要 ffmpeg**(主通道 fxtwitter 直链是自带音轨的单文件 mp4);仅极少数只有分离音视频流的视频需要,本地可选装(`brew install ffmpeg`),镜像为控制体积未内置。
 
 ## 🐳 Docker 部署(Docker Compose)
 
@@ -185,7 +184,7 @@ docker compose down         # 停止并移除容器
 ├── scripts/                  # 联调脚本(aria2_selftest.py / ytdlp_selftest.py,不依赖 Telegram)
 ├── tests/                    # 纯逻辑单元测试(pytest)
 ├── requirements.txt          # Python 依赖
-├── Dockerfile                # 镜像构建(内置 aria2 + ffmpeg)
+├── Dockerfile                # 镜像构建(内置 aria2;不含 ffmpeg 以控制体积)
 ├── .dockerignore             # 排除密钥/登录态进镜像
 ├── .env.example              # 环境变量模板
 └── .github/workflows/        # 手动触发的构建推送工作流

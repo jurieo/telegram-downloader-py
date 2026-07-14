@@ -97,8 +97,10 @@ class Ytdlp:
                 progress["speed"] = d.get("speed") or 0
 
         ydl_opts = {
-            # 最佳视频+音频，合并为 mp4（推特高清常是分离流/HLS，需 ffmpeg 合并）
-            "format": "bv*+ba/b",
+            # 优先单文件 mp4（自带音轨，无需 ffmpeg 合并）；没有单文件时才退到
+            # 「最佳视频+音频」合并（需要 ffmpeg，仅极少数 HLS-only 场景命中）。
+            # 主通道 fxtwitter 直链本身就是单文件 mp4，恒走第一分支。
+            "format": "b[ext=mp4]/bv*+ba/b",
             "merge_output_format": "mp4",
             "outtmpl": os.path.join(self.download_dir, "%(id)s.%(ext)s"),
             "noplaylist": False,       # 一条推文可能含多个视频 → 多 entry → 多文件
@@ -238,6 +240,8 @@ def _clean_error(e):
     """把 yt-dlp 的报错转成简洁中文提示。"""
     msg = (str(e).strip() or type(e).__name__).replace("ERROR: ", "")
     low = msg.lower()
+    if "ffmpeg" in low:
+        return "该视频只有分离的音视频流，需要 ffmpeg 合并（当前环境未安装）"
     if "no video" in low or "no media" in low or "unsupported url" in low:
         return "未在该推文中找到可下载的视频"
     if any(k in low for k in ("nsfw", "age", "log in", "authenticat", "protected", "private")):

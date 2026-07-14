@@ -26,6 +26,11 @@ except TypeError:
 # 留空 = 仅下载模式（只监听收藏夹，只下载不转发）。
 TARGET_CHATS = parse_target_chats(os.getenv("TARGET_CHAT"))
 
+# SOURCE_CHAT：逗号分隔的单向监听源（机器人/频道/群）。
+# 源里出现的图片/视频 → 无引用转发到 TARGET_CHAT 全部成员；源永不作为转发目标。
+# 典型用法：把下载机器人加进来，它回给你的视频自动镜像到备份组。
+SOURCE_CHATS = parse_target_chats(os.getenv("SOURCE_CHAT"))
+
 # 磁力下载相关配置（均有默认值，旧 .env 不改也能跑）
 MAX_UPLOAD_CONCURRENCY = int(os.getenv("MAX_UPLOAD_CONCURRENCY", "4"))
 MAX_FILE_SIZE_GB = float(os.getenv("MAX_FILE_SIZE_GB", "4"))
@@ -53,6 +58,7 @@ TWITTER_RE = r'https?://(?:www\.|mobile\.)?(?:twitter|x)\.com/[^\s/]+/status/\d+
 # ================= 运行时状态（在 _amain 里解析赋值） =================
 ME_ID = None            # 本账号自身 id（收藏夹 me 的 chat_id）
 TARGET_IDS = []         # 规范化后的备份目标 id 列表
+SOURCE_IDS = []         # 规范化后的单向监听源 id 列表（只进不出）
 registry = SentRegistry()   # 记录机器人自己发出的消息，防止互为备份时死循环
 
 
@@ -288,7 +294,7 @@ async def handle_link(event):
 
 # ================= 5. 事件处理：路由 =================
 async def on_new_message(event):
-    """单条消息：收藏夹处理链接/磁力/图片视频；备份群只处理图片视频。相册交给 on_album。"""
+    """单条消息：收藏夹处理链接/磁力/图片视频；备份群与单向源只处理图片视频。相册交给 on_album。"""
     msg = event.message
 
     # 防回环：机器人自己发出/转发出去的消息直接跳过
@@ -321,7 +327,8 @@ async def on_new_message(event):
                 print(f"⚠️ 收藏夹媒体转发失败（id={msg.id}）：{e}")
         return
 
-    # 备份群 A/B/C：只转图片/视频，静默无引用转发到其余成员
+    # 备份群 A/B/C 或单向源（机器人/频道）：只转图片/视频，静默无引用转发。
+    # compute_targets 排除来源自身：备份群 → 其余成员；单向源不在集合里 → 全部成员。
     if is_media_message(msg):
         try:
             await forwarder.mirror(
@@ -346,7 +353,7 @@ async def on_album(event):
 
 # ================= 6. 启动程序 =================
 async def _amain():
-    global ME_ID, TARGET_IDS
+    global ME_ID, TARGET_IDS, SOURCE_IDS
 
     await client.start()
     me = await client.get_me()
@@ -358,7 +365,7 @@ async def _amain():
     except Exception as e:
         print(f"⚠️ 预取会话列表失败（可能影响按 id 解析目标）：{e}")
 
-    # 规范化每个备份目标，并组成监听列表 = 收藏夹 + 全部目标
+    # 规范化每个备份目标，并组成监听列表 = 收藏夹 + 全部目标 + 全部单向源
     monitor = ['me']
     for raw in TARGET_CHATS:
         try:
@@ -368,11 +375,28 @@ async def _amain():
         except Exception as e:
             print(f"⚠️ 无法访问备份目标 {raw}，已跳过：{e}")
 
+    # 单向监听源（机器人/频道/群）：只监听，永不作为转发目标
+    for raw in SOURCE_CHATS:
+        try:
+            ent = await client.get_entity(raw)
+            sid = utils.get_peer_id(ent)
+            if sid in TARGET_IDS:
+                # 同时也是备份目标：已在监听列表里，按目标语义处理即可
+                continue
+            SOURCE_IDS.append(sid)
+            monitor.append(ent)
+        except Exception as e:
+            print(f"⚠️ 无法访问监听源 {raw}，已跳过：{e}")
+
+    if SOURCE_IDS and not TARGET_IDS:
+        print("⚠️ 配置了 SOURCE_CHAT 但未配置 TARGET_CHAT：源里的媒体没有转发目标，不会有动作")
+
     client.add_event_handler(on_album, events.Album(chats=monitor))
     client.add_event_handler(on_new_message, events.NewMessage(chats=monitor))
 
     if TARGET_IDS:
-        print(f"🚀 UserBot 已启动：监听 收藏夹 + {len(TARGET_IDS)} 个备份目标，互为无引用转发图片/视频")
+        src = f" + {len(SOURCE_IDS)} 个单向源" if SOURCE_IDS else ""
+        print(f"🚀 UserBot 已启动：监听 收藏夹 + {len(TARGET_IDS)} 个备份目标{src}，互为无引用转发图片/视频")
     else:
         print("🚀 UserBot 已启动：仅下载模式（未配置 TARGET_CHAT），只监听收藏夹")
 

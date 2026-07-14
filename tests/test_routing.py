@@ -50,6 +50,13 @@ def test_me_never_a_target_even_if_configured():
     assert compute_targets(A, ME, [ME, A, B]) == [B]
 
 
+def test_from_outside_source_fans_out_to_all():
+    # 单向源（SOURCE_CHAT，如下载机器人）：来源不在集合里 → 转发到集合全部成员。
+    # 这是 SOURCE_CHAT 功能依赖的核心语义，钉死防止改坏。
+    BOT = 987654321  # 机器人对话是正数用户 id
+    assert compute_targets(BOT, ME, S) == [A, B, C]
+
+
 def test_empty_targets():
     assert compute_targets(ME, ME, []) == []
 

@@ -3,7 +3,7 @@ import os
 
 from telethon.errors import FloodWaitError
 
-from progress import AggregateProgress
+from common.progress import AggregateProgress
 
 
 async def upload_videos(client, target_chat, files, status_msg, concurrency,

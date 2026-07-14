@@ -11,7 +11,7 @@ import time
 
 from telethon.errors import ChatForwardsRestrictedError, FloodWaitError
 
-from progress import ProgressBar
+from common.progress import ProgressBar
 
 # ================= 限流保护与提醒 =================
 # 命中 FloodWait 后进入全局「冷却」：冷却期内跳过所有转发，避免在惩罚期继续发

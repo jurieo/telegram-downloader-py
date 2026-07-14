@@ -4,13 +4,13 @@ from dotenv import load_dotenv
 from telethon import TelegramClient, events, utils
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
-from progress import ProgressBar
-from aria2_client import Aria2Client
-from filters import is_media_message
-from routing import parse_target_chats, compute_targets, SentRegistry
-import forwarder
-import media_upload
-import ytdlp_client
+from common.progress import ProgressBar
+from common.filters import is_media_message
+from downloader.aria2_client import Aria2Client
+from downloader import ytdlp_client
+from transfer.routing import parse_target_chats, compute_targets, SentRegistry
+from transfer import forwarder
+from transfer import media_upload
 
 # ================= 1. 读取配置 =================
 load_dotenv()

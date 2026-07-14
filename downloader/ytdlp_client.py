@@ -24,7 +24,7 @@ import os
 import re
 import urllib.request
 
-from progress import make_bar
+from common.progress import make_bar
 
 # fxtwitter 公共解析 API（FixTweet/FxEmbed 项目）
 FXTWITTER_API = "https://api.fxtwitter.com/status/{tweet_id}"

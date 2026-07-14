@@ -1,6 +1,6 @@
 import pytest
 
-import forwarder
+from transfer import forwarder
 
 
 @pytest.fixture(autouse=True)

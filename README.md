@@ -171,18 +171,21 @@ docker compose down         # 停止并移除容器
 
 ```
 .
-├── main.py                   # 主程序入口:配置、启动、事件路由(收藏夹链接/磁力 + 多源视频备份)
-├── routing.py                # 路由与防回环:目标解析 + 转发拓扑 + 已发消息登记(纯逻辑)
-├── forwarder.py              # 无引用转发:直接转发 + 相册整组 + 受保护下载重传 + 传一次转其余
-├── filters.py                # 视频识别:文件名 + 消息是否视频(纯函数)
-├── progress.py               # 进度条:单文件进度 + 并发上传聚合进度
-├── aria2_client.py           # aria2c 守护进程管理 + JSON-RPC + 磁力下载
-├── ytdlp_client.py           # 推特/X 视频下载:fxtwitter 直链优先 + yt-dlp 官方解析兜底(线程池执行 + 进度轮询)
-├── media_upload.py           # 视频并发上传 + FloodWait 退避
+├── main.py                   # 主程序入口:配置、启动、事件路由(收藏夹链接/磁力/推特 + 多源视频备份)
+├── common/                   # 共享工具
+│   ├── filters.py            #   媒体识别:文件名/消息类型判断 + 种子选片(纯函数)
+│   └── progress.py           #   进度条:单文件进度 + 并发上传聚合进度
+├── downloader/               # 下载引擎
+│   ├── aria2_client.py       #   aria2c 守护进程管理 + JSON-RPC + 磁力下载
+│   └── ytdlp_client.py       #   推特/X 视频下载:fxtwitter 直链优先 + yt-dlp 官方解析兜底
+├── transfer/                 # Telegram 转发侧
+│   ├── routing.py            #   路由与防回环:目标解析 + 转发拓扑 + 已发消息登记(纯逻辑)
+│   ├── forwarder.py          #   无引用转发:直接转发 + 相册整组 + 受保护下载重传 + 传一次转其余
+│   └── media_upload.py       #   视频并发上传 + FloodWait 退避
 ├── scripts/                  # 联调脚本(aria2_selftest.py / ytdlp_selftest.py,不依赖 Telegram)
 ├── tests/                    # 纯逻辑单元测试(pytest)
 ├── requirements.txt          # Python 依赖
-├── Dockerfile                # 镜像构建(内置 aria2)
+├── Dockerfile                # 镜像构建(内置 aria2 + ffmpeg)
 ├── .dockerignore             # 排除密钥/登录态进镜像
 ├── .env.example              # 环境变量模板
 └── .github/workflows/        # 手动触发的构建推送工作流

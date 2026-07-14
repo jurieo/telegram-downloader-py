@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from filters import is_image_message, is_media_message
+from common.filters import is_image_message, is_media_message
 
 
 def _msg(**kw):

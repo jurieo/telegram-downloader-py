@@ -7,8 +7,8 @@ import subprocess
 import time
 import urllib.request
 
-from filters import plan_files
-from progress import make_bar
+from common.filters import plan_files
+from common.progress import make_bar
 
 # 给「裸磁力」(只有 infohash、不带 tracker) 兜底用的公共 tracker，
 # 注入后即便磁力本身没带 tracker 也能找到 peer。

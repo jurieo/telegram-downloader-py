@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 from telethon.errors import FloodWaitError
 
-import forwarder
-from routing import SentRegistry
+from transfer import forwarder
+from transfer.routing import SentRegistry
 
 B, C = -100222, -100333
 

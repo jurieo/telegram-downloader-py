@@ -22,10 +22,10 @@ import asyncio
 import os
 import sys
 
-# 让脚本能 import 项目根目录下的 ytdlp_client
+# 让脚本能 import 项目根目录下的 downloader / common 包
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ytdlp_client import Ytdlp, YtdlpError  # noqa: E402
+from downloader.ytdlp_client import Ytdlp, YtdlpError  # noqa: E402
 
 # 用独立子目录，避免和正式 downloads 内容混在一起
 SELFTEST_DIR = "./downloads/_selftest"

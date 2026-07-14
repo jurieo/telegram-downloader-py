@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from routing import parse_target_chats, compute_targets, SentRegistry
+from transfer.routing import parse_target_chats, compute_targets, SentRegistry
 
 
 # ---------- parse_target_chats ----------

@@ -29,11 +29,11 @@ import asyncio
 import os
 import sys
 
-# 让脚本能 import 项目根目录下的 aria2_client / filters
+# 让脚本能 import 项目根目录下的 downloader / common 包
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from aria2_client import Aria2Client, Aria2Error  # noqa: E402
-from filters import plan_files                     # noqa: E402
+from downloader.aria2_client import Aria2Client, Aria2Error  # noqa: E402
+from common.filters import plan_files                     # noqa: E402
 
 # WebTorrent Sintel 测试种子（含视频 + 字幕 + 海报，长期有做种）
 DEFAULT_MAGNET = (

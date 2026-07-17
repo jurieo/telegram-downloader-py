@@ -1,6 +1,5 @@
 services:
   telegram-downloader:
-    # 改成你自己的镜像名（与 GitHub Actions 推送的一致）
     image: jurieo/telegram-downloader:latest
     container_name: tg-downloader
     restart: unless-stopped

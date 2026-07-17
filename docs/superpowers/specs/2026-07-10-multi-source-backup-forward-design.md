@@ -8,7 +8,7 @@
 
 目标：把多个群组/频道组成一个**备份集合 S**，其中任意一个出现的视频都无引用转发到集合内的其他成员，实现「互为备份」。典型用法：用户从外部频道把视频**转发**进 S 的某一个（如 A），机器人自动把它无引用镜像到 B、C。
 
-## 需求确认（已与用户对齐）
+## 需求确认
 
 - `TARGET_CHAT` 改为**英文逗号分隔多值**，代表备份集合 S = {A, B, C}。留空 = 仅下载模式（只对 `me` 生效）。
 - 转发拓扑：
@@ -23,6 +23,7 @@
 ## 关键设计
 
 ### 无引用转发 + 合并视频
+
 - 直接转发：`forward_messages(target, messages, drop_author=True)`，传消息**列表**保留相册合并。
 - 相册用 `events.Album` 整组捕获；`events.NewMessage` 中带 `grouped_id` 的消息跳过（交给 Album，避免重复）。
 - 链接指向相册：先取该消息，再按 `grouped_id` 在 ±10 窗口捞出整组一起转。
@@ -30,20 +31,22 @@
 - 带宽优化：需发多个目标时，先上传/重传到 S 的第一个目标，再从那条服务器端 `forward_messages(drop_author=True)` 转给其余目标，避免重复上传。
 
 ### 防回环（关键）
+
 机器人是用户本人账号，转发进 A 会再次触发 A 的监听。用有界的 `SentRegistry` 记录机器人自己发出/转发出去的 `(chat_id, message_id)`：每次 `forward_messages` / `send_file` 返回后**立刻**记入（单线程事件循环下保证事件回调看到时已入表），事件处理器开头命中则跳过。保留最近约 2000 条，重启清空（重启无在途回声，安全）。
 
 ## 模块划分
 
-| 文件 | 职责 |
-|---|---|
-| `routing.py`（新增） | 纯逻辑：`parse_target_chats`、`compute_targets`、`SentRegistry`。无 telethon 依赖、可单测 |
-| `forwarder.py`（新增） | 无引用转发 + 相册整组 + 受保护兜底 + 「传一次转其余」 |
-| `filters.py` | 新增 `is_video_message(msg)` |
-| `media_upload.py` | 上传后额外返回已发消息对象；接受 registry 记录自身上传 |
-| `main.py` | 启动解析 me_id/targets；注册 `Album` + `NewMessage`；按拓扑路由 |
-| `tests/` | `compute_targets`、`parse_target_chats`、`is_video_message` 纯逻辑单测 |
-| `.env.example` / `README.md` | 多值配置 + 互为备份拓扑说明 |
+| 文件                         | 职责                                                                                      |
+| ---------------------------- | ----------------------------------------------------------------------------------------- |
+| `routing.py`（新增）         | 纯逻辑：`parse_target_chats`、`compute_targets`、`SentRegistry`。无 telethon 依赖、可单测 |
+| `forwarder.py`（新增）       | 无引用转发 + 相册整组 + 受保护兜底 + 「传一次转其余」                                     |
+| `filters.py`                 | 新增 `is_video_message(msg)`                                                              |
+| `media_upload.py`            | 上传后额外返回已发消息对象；接受 registry 记录自身上传                                    |
+| `main.py`                    | 启动解析 me_id/targets；注册 `Album` + `NewMessage`；按拓扑路由                           |
+| `tests/`                     | `compute_targets`、`parse_target_chats`、`is_video_message` 纯逻辑单测                    |
+| `.env.example` / `README.md` | 多值配置 + 互为备份拓扑说明                                                               |
 
 ## 已知边界
+
 - Telethon 已知 bug：相册恰好 1 图 + 1 视频时 `events.Album` 可能不触发，这种组合可能被漏掉（代码注释标注）。
 - 「视频」判定：以视频形式发送的消息，或以文件形式发送但 mime/扩展名为视频的文档；排除 GIF 动图与圆形视频笔记。可按反馈调整。

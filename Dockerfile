@@ -25,7 +25,7 @@ COPY common/ ./common/
 COPY downloader/ ./downloader/
 COPY transfer/ ./transfer/
 # 联调脚本（不依赖 Telegram，可在容器内单独跑来排查下载链路）
-# COPY scripts/ ./scripts/
+COPY scripts/ ./scripts/
 
 # 下载目录作为数据卷，方便持久化到宿主机
 VOLUME ["/app/downloads"]

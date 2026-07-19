@@ -19,10 +19,10 @@
 
 行为由 `.env` 里的 `TARGET_CHAT` 决定。它是一个**逗号分隔的备份集合** S,例如 `TARGET_CHAT=-100AAA,-100BBB,-100CCC`:
 
-| 视频出现的位置 | 无引用转发到 |
-| --- | --- |
-| **收藏夹 `me`** | S 全部成员(A、B、C) |
-| **S 中的某个(如 A)** | S 的其余成员(B、C),不含 `me` |
+| 视频出现的位置                    | 无引用转发到                  |
+| --------------------------------- | ----------------------------- |
+| **收藏夹 `me`**                   | S 全部成员(A、B、C)           |
+| **S 中的某个(如 A)**              | S 的其余成员(B、C),不含 `me`  |
 | **单向源 `SOURCE_CHAT` 中的某个** | S 全部成员;源永不作为转发目标 |
 
 - **只转视频**(含相册里含视频的整组),其他消息忽略。
@@ -30,10 +30,10 @@
 - **`me` 永不作为转发目标**;A/B/C 里任何人发的视频都会触发备份。
 - 典型用法:你从外部频道把视频**转发**进 A,机器人自动无引用镜像到 B、C。
 
-| `TARGET_CHAT`   | 行为 |
-| --------------- | ---- |
-| **填 1 个或多个** | 按上表在收藏夹与备份集合之间无引用转发视频 |
-| **留空 / 不填** | 仅把收藏夹里的媒体下载到本地 `downloads/`,不转发、不上传 |
+| `TARGET_CHAT`     | 行为                                                     |
+| ----------------- | -------------------------------------------------------- |
+| **填 1 个或多个** | 按上表在收藏夹与备份集合之间无引用转发视频               |
+| **留空 / 不填**   | 仅把收藏夹里的媒体下载到本地 `downloads/`,不转发、不上传 |
 
 ## 🔧 前置准备
 
@@ -114,11 +114,11 @@ python main.py
 
 `docker-compose.yml` 通过文件挂载提供配置与登录态:
 
-| 挂载项 | 作用 |
-|--------|------|
-| `./.env:/app/.env:ro` | 注入 API 凭证与目标频道配置(只读) |
-| `./my_transfer_session.session:/app/...` | Telegram 登录态,持久化到宿主机 |
-| `./downloads:/app/downloads` | 下载的文件持久化到宿主机 |
+| 挂载项                                   | 作用                              |
+| ---------------------------------------- | --------------------------------- |
+| `./.env:/app/.env:ro`                    | 注入 API 凭证与目标频道配置(只读) |
+| `./my_transfer_session.session:/app/...` | Telegram 登录态,持久化到宿主机    |
+| `./downloads:/app/downloads`             | 下载的文件持久化到宿主机          |
 
 ### ⚠️ 首次登录:必须先在容器内交互完成一次
 
@@ -146,28 +146,6 @@ docker compose pull         # 拉取最新镜像
 docker compose restart      # 重启
 docker compose down         # 停止并移除容器
 ```
-
-## ⚙️ GitHub Actions 自动构建
-
-工作流 `.github/workflows/telegram-downloader-docker.yml` 通过**手动触发**构建并推送镜像到 Docker Hub。
-
-### 配置 Secrets
-
-在 GitHub 仓库 **Settings → Secrets and variables → Actions** 添加:
-
-| Secret            | 说明                                                                                                                          |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `DOCKERHUB_TOKEN` | Docker Hub 的 Access Token(在 [hub.docker.com](https://hub.docker.com) → Account Settings → Security 生成,**不要用登录密码**) |
-
-> ℹ️ 镜像命名空间使用 GitHub 仓库所有者用户名(`github.repository_owner`),即**默认你的 Docker Hub 用户名与 GitHub 用户名相同**。若两者不同,请把工作流中的 `username:` 改为你的 Docker Hub 用户名(或另设一个 `DOCKERHUB_USERNAME` secret 引用)。
-
-### 触发构建
-
-1. 进入仓库 **Actions** 页
-2. 左侧选择 **Build & Push telegram-downloader**
-3. 点击 **Run workflow**,可填写镜像标签(默认 `latest`)
-
-构建产物:`<用户名>/telegram-downloader:<tag>`,支持 `linux/amd64` 与 `linux/arm64`。
 
 ## 📁 项目结构
 
@@ -198,3 +176,7 @@ docker compose down         # 停止并移除容器
 - `.env` 与 `*.session` 含敏感凭证,已被 `.gitignore` 与 `.dockerignore` 排除,**请勿提交或打包进镜像**
 - `.session` 一旦泄露,他人即可完全控制你的 Telegram 账号
 - 本项目为个人账号 UserBot,请遵守 Telegram 服务条款,合理使用
+
+## 鸣谢
+
+感谢 [Linux.do](https://linux.do/) 社区提供的讨论、反馈与支持。

@@ -24,6 +24,11 @@ _last_forward = 0.0       # 已预约的下一次转发时间戳，配合 FORWAR
 # 设 0 关闭限速（测试用）。可用环境变量 FORWARD_INTERVAL 调整。
 FORWARD_INTERVAL = float(os.getenv("FORWARD_INTERVAL", "3"))
 
+# 转发/上传成功后是否删除本地下载的文件（默认 true 删除；设 false/0/no/off 保留）。
+DELETE_AFTER_UPLOAD = os.getenv("DELETE_AFTER_UPLOAD", "true").strip().lower() not in (
+    "0", "false", "no", "off"
+)
+
 
 def reset_flood_state():
     """重置限流冷却与限速时钟（测试用）。"""
@@ -199,11 +204,12 @@ async def _download_and_reupload(client, targets, msgs, registry, status_msg, do
         s2 = await client.forward_messages(target, sent, drop_author=True)
         registry.add_messages(s2)
 
-    for p in paths:
-        try:
-            os.remove(p)
-        except OSError:
-            pass
+    if DELETE_AFTER_UPLOAD:
+        for p in paths:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
 
     if status_msg:
         await status_msg.edit(f"🎉 **已下载重传并无引用转发到 {len(targets)} 个目标**")

@@ -73,6 +73,9 @@ TORRENT_STALL_TIMEOUT=300   # 种子长时间无速度即放弃的秒数(处理"
 
 # ===== 转发限速(可选) =====
 FORWARD_INTERVAL=3          # 每两次转发之间的最小间隔秒数(默认 3,防突发触发 FloodWait;设 0 关闭)
+
+# ===== 本地文件清理(可选) =====
+DELETE_AFTER_UPLOAD=true    # 转发/上传成功后是否删除本地下载的文件(默认 true;设 false 保留在 DOWNLOAD_DIR)
 ```
 
 > 💡 `TARGET_CHAT` 可填 1 个或多个 ID,英文逗号分隔;留空即进入「仅下载」模式。频道 ID 通常形如 `-100xxxxxxxxxx`。

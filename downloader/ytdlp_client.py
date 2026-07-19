@@ -181,8 +181,8 @@ class Ytdlp:
             # 限流/文字未变更等编辑异常忽略，不影响下载
             pass
 
-    async def cleanup(self, result):
-        if result is None:
+    async def cleanup(self, result, delete_files=True):
+        if result is None or not delete_files:
             return
         for p in result.downloaded_files:
             self._unlink(p)

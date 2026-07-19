@@ -182,3 +182,21 @@ def test_pace_enforces_interval_between_forwards():
     assert len(c.forwards) == 2
     assert elapsed >= 0.05
 
+
+
+def test_reupload_deletes_local_files_by_default(monkeypatch):
+    removed = []
+    monkeypatch.setattr(forwarder.os, "remove", lambda p: removed.append(p))
+    monkeypatch.setattr(forwarder, "DELETE_AFTER_UPLOAD", True)
+    c = FakeClient()
+    run(forwarder.mirror(c, [B], [_msg(noforwards=True)], SentRegistry()))
+    assert removed == ["./downloads/f1.mp4"]
+
+
+def test_reupload_keeps_local_files_when_delete_disabled(monkeypatch):
+    removed = []
+    monkeypatch.setattr(forwarder.os, "remove", lambda p: removed.append(p))
+    monkeypatch.setattr(forwarder, "DELETE_AFTER_UPLOAD", False)
+    c = FakeClient()
+    run(forwarder.mirror(c, [B], [_msg(noforwards=True)], SentRegistry()))
+    assert removed == []

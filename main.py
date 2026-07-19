@@ -37,6 +37,12 @@ MAX_FILE_SIZE_GB = float(os.getenv("MAX_FILE_SIZE_GB", "4"))
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "./downloads")
 TORRENT_STALL_TIMEOUT = int(os.getenv("TORRENT_STALL_TIMEOUT", "300"))
 
+# 转发/上传成功后是否删除本地下载的文件（默认 true 删除；设 false/0/no/off 保留）。
+# 只影响「成功上传后」的清理；下载失败或无可上传文件时的残留垃圾仍会清掉。
+DELETE_AFTER_UPLOAD = os.getenv("DELETE_AFTER_UPLOAD", "true").strip().lower() not in (
+    "0", "false", "no", "off"
+)
+
 client = TelegramClient('my_transfer_session', API_ID, API_HASH)
 # 适当抬高自动等待阈值：并发上传触发小额 FloodWait 时由 telethon 自行 sleep
 client.flood_sleep_threshold = 120
@@ -130,7 +136,7 @@ async def handle_magnet(event, magnet):
             )
         await status_msg.edit(summary)
 
-        await aria2.cleanup(result)
+        await aria2.cleanup(result, delete_files=DELETE_AFTER_UPLOAD)
     except Exception as e:
         # 保证错误信息非空（某些异常如 TimeoutError 的 str() 为空），并打到 docker 日志
         detail = str(e).strip() or type(e).__name__
@@ -192,7 +198,7 @@ async def handle_twitter(event, url):
             )
         await status_msg.edit(summary)
 
-        await ytdlp.cleanup(result)
+        await ytdlp.cleanup(result, delete_files=DELETE_AFTER_UPLOAD)
     except Exception as e:
         detail = str(e).strip() or type(e).__name__
         print(f"⚠️ 推特下载失败：{detail}")

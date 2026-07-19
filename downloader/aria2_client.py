@@ -214,18 +214,20 @@ class Aria2Client:
             pass
 
     # ---------- 清理 ----------
-    async def cleanup(self, result):
+    async def cleanup(self, result, delete_files=True):
+        """清理下载任务：移除 aria2 任务记录；delete_files=False 时保留本地文件。"""
         if result is None:
             return
-        try:
-            if result.root_dir and os.path.isdir(result.root_dir):
-                shutil.rmtree(result.root_dir, ignore_errors=True)
-            else:
-                for p in result.downloaded_files:
-                    self._unlink(p)
-                    self._unlink(p + ".aria2")
-        except Exception:
-            pass
+        if delete_files:
+            try:
+                if result.root_dir and os.path.isdir(result.root_dir):
+                    shutil.rmtree(result.root_dir, ignore_errors=True)
+                else:
+                    for p in result.downloaded_files:
+                        self._unlink(p)
+                        self._unlink(p + ".aria2")
+            except Exception:
+                pass
         if result.gid:
             await self._safe_remove(result.gid)
 

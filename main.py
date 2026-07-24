@@ -2,10 +2,12 @@ import os
 import re
 from dotenv import load_dotenv
 from telethon import TelegramClient, events, utils
+from telethon.errors import MessageNotModifiedError
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
 from common.progress import ProgressBar
 from common.filters import is_media_message
+from fast_telethon import parallel_download
 from downloader.aria2_client import Aria2Client
 from downloader import ytdlp_client
 from transfer.routing import parse_target_chats, compute_targets, SentRegistry
@@ -43,7 +45,38 @@ DELETE_AFTER_UPLOAD = os.getenv("DELETE_AFTER_UPLOAD", "true").strip().lower() n
     "0", "false", "no", "off"
 )
 
-client = TelegramClient('my_transfer_session', API_ID, API_HASH)
+# ===== 代理配置（可选）=====
+# 支持 SOCKS5 / HTTP 代理。留空则直连。
+# 环境变量格式: socks5://user:pass@host:port 或 http://host:port
+PROXY_URL = os.getenv("PROXY_URL", "")
+
+def _build_proxy():
+    """Parse PROXY_URL and return a telethon-compatible proxy tuple, or None."""
+    if not PROXY_URL:
+        return None
+    import re as _re
+    # Supported: socks5://[user:pass@]host:port  |  http://[user:pass@]host:port
+    m = _re.match(r'^(socks5|http)://(?:(.+?):(.+?)@)?([^:]+):(\d+)$', PROXY_URL)
+    if not m:
+        print(f"⚠️ PROXY_URL 格式错误，已忽略：{PROXY_URL}")
+        return None
+    proto, user, passwd, host, port = m.groups()
+    if proto == 'socks5':
+        try:
+            import python_socks
+            return (python_socks.ProxyType.SOCKS5, host, int(port), True, user or '', passwd or '')
+        except ImportError:
+            print("⚠️ python-socks 未安装，SOCKS5 代理不可用，将直连")
+            return None
+    else:  # http
+        return ('http', host, int(port))
+
+_proxy = _build_proxy()
+if _proxy:
+    print(f"🌐 使用代理：{PROXY_URL.split('@')[-1] if '@' in PROXY_URL else PROXY_URL}")
+    client = TelegramClient('my_transfer_session', API_ID, API_HASH, proxy=_proxy)
+else:
+    client = TelegramClient('my_transfer_session', API_ID, API_HASH)
 # 适当抬高自动等待阈值：并发上传触发小额 FloodWait 时由 telethon 自行 sleep
 client.flood_sleep_threshold = 120
 
@@ -66,6 +99,16 @@ ME_ID = None            # 本账号自身 id（收藏夹 me 的 chat_id）
 TARGET_IDS = []         # 规范化后的备份目标 id 列表
 SOURCE_IDS = []         # 规范化后的单向监听源 id 列表（只进不出）
 registry = SentRegistry()   # 记录机器人自己发出的消息，防止互为备份时死循环
+
+
+async def safe_status_edit(status_msg, text):
+    """更新状态消息；Telegram 拒绝同文案编辑时保持下载任务继续运行。"""
+    try:
+        await status_msg.edit(text)
+    except MessageNotModifiedError:
+        pass
+    except Exception as e:
+        print(f"⚠️ 状态消息更新失败：{e}")
 
 
 # ================= 2. 进度条工具类 =================
@@ -323,14 +366,37 @@ async def on_new_message(event):
         if tw:
             await handle_twitter(event, tw.group(0))
             return
-        # 收藏夹里的普通图片/视频：无引用转发到全部备份目标
+        # 收藏夹里的普通图片/视频：
         if is_media_message(msg):
-            try:
-                await forwarder.mirror(
-                    client, compute_targets(event.chat_id, ME_ID, TARGET_IDS), [msg], registry
-                )
-            except Exception as e:
-                print(f"⚠️ 收藏夹媒体转发失败（id={msg.id}）：{e}")
+            targets = compute_targets(event.chat_id, ME_ID, TARGET_IDS)
+            if not targets:
+                status_msg = await event.reply("🔄 **正在下载到服务器...**")
+                from common.progress import ProgressBar
+                cb = ProgressBar(status_msg, "视频/图片").callback
+                try:
+                    p = None
+                    for _attempt in range(1, 4):
+                        try:
+                            p = await parallel_download(client, msg.media, DOWNLOAD_DIR + '/' + (getattr(msg.file, 'name', None) or f'{msg.id}.mp4'), progress_callback=cb, connections=3)
+                            break
+                        except Exception as _dl_err:
+                            if _attempt == 3:
+                                raise
+                            print(f'⚠️ 下载重试 {_attempt}/3: {_dl_err}')
+                            import asyncio as _aio; await _aio.sleep(3 * _attempt)
+                    await status_msg.edit(f"🎉 **下载完成！**\n✅ 文件已保存：\n`{p}`")
+                    import os, stat
+                    try:
+                        os.chown(p, 1000, 1001)
+                        os.chmod(p, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH)
+                    except: pass
+                except Exception as e:
+                    await status_msg.edit(f"❌ **下载失败**：{e}")
+            else:
+                try:
+                    await forwarder.mirror(client, targets, [msg], registry)
+                except Exception as e:
+                    pass
         return
 
     # 备份群 A/B/C 或单向源（机器人/频道）：只转图片/视频，静默无引用转发。
@@ -351,10 +417,44 @@ async def on_album(event):
     if not any(is_media_message(m) for m in event.messages):
         return
     targets = compute_targets(event.chat_id, ME_ID, TARGET_IDS)
-    try:
-        await forwarder.mirror(client, targets, list(event.messages), registry)
-    except Exception as e:
-        print(f"⚠️ 相册转发失败（chat={event.chat_id}）：{e}")
+    if not targets and event.chat_id == ME_ID:
+        status_msg = await event.reply("🔄 **相册开始下载...**")
+        from common.progress import ProgressBar
+        cb = ProgressBar(status_msg, "相册媒体").callback
+        saved = []
+        await safe_status_edit(status_msg, "🔄 **正在下载相册...**")
+        for i, m in enumerate(event.messages):
+            if m.media:
+                try:
+                    p = None
+                    for _attempt in range(1, 4):
+                        try:
+                            p = await parallel_download(client, m.media, DOWNLOAD_DIR + '/' + (getattr(m.file, 'name', None) or f'{m.id}.mp4'), progress_callback=cb, connections=3)
+                            break
+                        except Exception as _dl_err:
+                            if _attempt == 3:
+                                raise
+                            print(f'⚠️ 相册下载重试 {_attempt}/3: {_dl_err}')
+                            import asyncio as _aio; await _aio.sleep(3 * _attempt)
+                    if p:
+                        saved.append(p)
+                        import os, stat
+                        try:
+                            os.chown(p, 1000, 1001)
+                            os.chmod(p, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP | stat.S_IROTH)
+                        except: pass
+                except Exception as e:
+                    print(f"⚠️ 相册媒体下载失败（message={m.id}）：{e}")
+        if saved:
+            paths = "\n".join(f"`{p}`" for p in saved)
+            await safe_status_edit(status_msg, f"🎉 **相册下载完成！**\n{paths}")
+        else:
+            await safe_status_edit(status_msg, "❌ **相册下载失败：没有媒体成功保存，请查看容器日志。**")
+    else:
+        try:
+            await forwarder.mirror(client, targets, list(event.messages), registry)
+        except Exception as e:
+            pass
 
 
 # ================= 6. 启动程序 =================

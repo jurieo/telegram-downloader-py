@@ -12,6 +12,7 @@ import time
 from telethon.errors import ChatForwardsRestrictedError, FloodWaitError
 
 from common.progress import ProgressBar
+from transfer import media_download
 
 # ================= 限流保护与提醒 =================
 # 命中 FloodWait 后进入全局「冷却」：冷却期内跳过所有转发，避免在惩罚期继续发
@@ -28,6 +29,9 @@ FORWARD_INTERVAL = float(os.getenv("FORWARD_INTERVAL", "3"))
 DELETE_AFTER_UPLOAD = os.getenv("DELETE_AFTER_UPLOAD", "true").strip().lower() not in (
     "0", "false", "no", "off"
 )
+
+# 相册/多文件从源下载时的并发数（默认 4，与上传并发同量级；设 1 退回串行）。
+MAX_DOWNLOAD_CONCURRENCY = int(os.getenv("MAX_DOWNLOAD_CONCURRENCY", "4"))
 
 
 def reset_flood_state():
@@ -154,19 +158,12 @@ async def _direct_forward(client, targets, msgs, registry):
 
 async def _download_and_reupload(client, targets, msgs, registry, status_msg, download_dir):
     """受保护内容兜底：下载到本地 → 传到首个目标 → 服务器端转给其余目标 → 清理。"""
-    os.makedirs(download_dir, exist_ok=True)
-
-    paths = []
-    for idx, m in enumerate(msgs):
-        cb = None
-        if status_msg:
-            title = "📥 **正在从源下载到服务器...**"
-            if len(msgs) > 1:
-                title = f"📥 **正在下载第 {idx + 1}/{len(msgs)} 个...**"
-            cb = ProgressBar(status_msg, title).callback
-        path = await client.download_media(m, file=download_dir + "/", progress_callback=cb)
-        if path:
-            paths.append(path)
+    paths, dl_failed = await media_download.download_messages(
+        client, msgs, download_dir, MAX_DOWNLOAD_CONCURRENCY,
+        status_msg=status_msg, title="📥 **正在从源并发下载到服务器…**",
+    )
+    for idx, reason in dl_failed:
+        print(f"⚠️ 下载源消息失败（第 {idx + 1} 个）：{reason}")
 
     if not paths:
         if status_msg:

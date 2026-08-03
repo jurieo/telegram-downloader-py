@@ -4,13 +4,13 @@ from dotenv import load_dotenv
 from telethon import TelegramClient, events, utils
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
-from common.progress import ProgressBar
 from common.filters import is_media_message
 from downloader.aria2_client import Aria2Client
 from downloader import ytdlp_client
 from transfer.routing import parse_target_chats, compute_targets, SentRegistry
 from transfer import forwarder
 from transfer import media_upload
+from transfer import media_download
 
 # ================= 1. 读取配置 =================
 load_dotenv()
@@ -35,6 +35,8 @@ SOURCE_CHATS = parse_target_chats(os.getenv("SOURCE_CHAT"))
 MAX_UPLOAD_CONCURRENCY = int(os.getenv("MAX_UPLOAD_CONCURRENCY", "4"))
 MAX_FILE_SIZE_GB = float(os.getenv("MAX_FILE_SIZE_GB", "4"))
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "./downloads")
+# 相册/多文件从源下载时的并发数（默认 4；设 1 退回串行）
+MAX_DOWNLOAD_CONCURRENCY = int(os.getenv("MAX_DOWNLOAD_CONCURRENCY", "4"))
 TORRENT_STALL_TIMEOUT = int(os.getenv("TORRENT_STALL_TIMEOUT", "300"))
 
 # 转发/上传成功后是否删除本地下载的文件（默认 true 删除；设 false/0/no/off 保留）。
@@ -289,17 +291,12 @@ async def handle_link(event):
 
         # ===== 模式 A：未配置备份目标，仅下载到本地 =====
         if not TARGET_IDS:
-            os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-            saved = []
-            for i, m in enumerate(msgs):
-                title = "📥 **正在从源频道下载到服务器...**"
-                if len(msgs) > 1:
-                    title = f"📥 **正在下载第 {i + 1}/{len(msgs)} 个...**"
-                p = await client.download_media(
-                    m, file=DOWNLOAD_DIR + "/", progress_callback=ProgressBar(status_msg, title).callback
-                )
-                if p:
-                    saved.append(p)
+            saved, dl_failed = await media_download.download_messages(
+                client, msgs, DOWNLOAD_DIR, MAX_DOWNLOAD_CONCURRENCY,
+                status_msg=status_msg, title="📥 **正在从源频道并发下载到服务器…**",
+            )
+            for idx, reason in dl_failed:
+                print(f"⚠️ 下载失败（第 {idx + 1} 个）：{reason}")
             paths = "\n".join(f"`{p}`" for p in saved)
             await status_msg.edit(f"🎉 **下载完成！**\n✅ 文件已保存到服务器：\n{paths}")
             return

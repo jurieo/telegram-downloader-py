@@ -67,6 +67,7 @@ SOURCE_CHAT=
 
 # ===== 磁力链接下载(可选,均有默认值) =====
 MAX_UPLOAD_CONCURRENCY=4    # 并发上传上限(默认 4,过高易触发 FloodWait,建议 3-5)
+MAX_DOWNLOAD_CONCURRENCY=4  # 相册/多文件从源下载的并发上限(默认 4,设 1 退回逐个下载)
 MAX_FILE_SIZE_GB=4          # 单文件大小上限 GB,超过则不下载不上传(默认 4,对应 Premium 4GB)
 DOWNLOAD_DIR=./downloads    # 下载目录
 TORRENT_STALL_TIMEOUT=300   # 种子长时间无速度即放弃的秒数(处理"无人做种")
@@ -98,6 +99,7 @@ python main.py
 2. 把任意消息链接粘贴进去,例如:
    - 公开频道:`https://t.me/channelname/123`
    - 私有频道:`https://t.me/c/1234567890/123`
+   - 链接指向相册(一组多个视频)时,整组按 `MAX_DOWNLOAD_CONCURRENCY` **并发下载**,不再逐个排队
 3. 或者粘贴一个**磁力链接**(`magnet:?xt=urn:btih:...`):程序会用 aria2 下载种子里的**视频文件**并上传到目标频道
    - 只下载/上传视频(音频、图片、字幕、nfo 等忽略,也不下载)
    - 单文件超过 `MAX_FILE_SIZE_GB`(默认 4GB)会被跳过,并在消息里说明原因

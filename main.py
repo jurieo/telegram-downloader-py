@@ -2,9 +2,11 @@ import os
 import re
 from dotenv import load_dotenv
 from telethon import TelegramClient, events, utils
+from telethon.errors import MessageNotModifiedError
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
 from common.filters import is_media_message
+from common.proxy import parse_proxy, redact
 from downloader.aria2_client import Aria2Client
 from downloader import ytdlp_client
 from transfer.routing import parse_target_chats, compute_targets, SentRegistry
@@ -45,7 +47,13 @@ DELETE_AFTER_UPLOAD = os.getenv("DELETE_AFTER_UPLOAD", "true").strip().lower() n
     "0", "false", "no", "off"
 )
 
-client = TelegramClient('my_transfer_session', API_ID, API_HASH)
+# 代理（可选）：socks5://[user:pass@]host:port 或 http://...；留空直连。
+PROXY_URL = os.getenv("PROXY_URL", "")
+
+_proxy = parse_proxy(PROXY_URL)
+if _proxy:
+    print(f"🌐 使用代理：{redact(PROXY_URL)}")
+client = TelegramClient('my_transfer_session', API_ID, API_HASH, proxy=_proxy)
 # 适当抬高自动等待阈值：并发上传触发小额 FloodWait 时由 telethon 自行 sleep
 client.flood_sleep_threshold = 120
 
@@ -68,6 +76,20 @@ ME_ID = None            # 本账号自身 id（收藏夹 me 的 chat_id）
 TARGET_IDS = []         # 规范化后的备份目标 id 列表
 SOURCE_IDS = []         # 规范化后的单向监听源 id 列表（只进不出）
 registry = SentRegistry()   # 记录机器人自己发出的消息，防止互为备份时死循环
+
+
+async def safe_status_edit(status_msg, text):
+    """更新状态消息，失败不打断下载。
+
+    并发进度回调很容易在两次渲染间算出同样的文案，Telegram 会拒绝这种
+    「没变化」的编辑并抛错；下载本身没问题，不该因此中断。
+    """
+    try:
+        await status_msg.edit(text)
+    except MessageNotModifiedError:
+        pass
+    except Exception as e:
+        print(f"⚠️ 状态消息更新失败：{e}")
 
 
 # ================= 2. 进度条工具类 =================
@@ -104,7 +126,7 @@ async def _finish_status(status_msg, replied, uploaded, target_count, skipped, f
         return
 
     head = f"🎉 **完成！已上传 {uploaded} 个视频到 {target_count} 个目标**"
-    await status_msg.edit("\n".join(extras if replied else [head] + extras))
+    await safe_status_edit(status_msg, "\n".join(extras if replied else [head] + extras))
 
 
 async def handle_magnet(event, magnet):
@@ -170,7 +192,7 @@ async def handle_magnet(event, magnet):
         # 保证错误信息非空（某些异常如 TimeoutError 的 str() 为空），并打到 docker 日志
         detail = str(e).strip() or type(e).__name__
         print(f"⚠️ 磁力下载失败：{detail}")
-        await status_msg.edit(f"❌ **磁力下载失败**：\n`{detail}`")
+        await safe_status_edit(status_msg, f"❌ **磁力下载失败**：\n`{detail}`")
         await aria2.cleanup(result)
 
 
@@ -233,7 +255,7 @@ async def handle_twitter(event, url):
     except Exception as e:
         detail = str(e).strip() or type(e).__name__
         print(f"⚠️ 推特下载失败：{detail}")
-        await status_msg.edit(f"❌ **推特下载失败**：\n`{detail}`")
+        await safe_status_edit(status_msg, f"❌ **推特下载失败**：\n`{detail}`")
         await ytdlp.cleanup(result)
 
 
@@ -319,9 +341,9 @@ async def handle_link(event):
         )
 
     except ValueError as ve:
-        await status_msg.edit(f"❌ **权限错误**：无法访问源频道。\n`{ve}`")
+        await safe_status_edit(status_msg, f"❌ **权限错误**：无法访问源频道。\n`{ve}`")
     except Exception as e:
-        await status_msg.edit(f"❌ **发生未知错误**：\n`{str(e)}`")
+        await safe_status_edit(status_msg, f"❌ **发生未知错误**：\n`{str(e)}`")
 
 
 # ================= 5. 事件处理：路由 =================

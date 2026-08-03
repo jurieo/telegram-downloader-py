@@ -2,3 +2,5 @@ telethon==1.43.2
 python-dotenv==1.2.1
 hachoir==3.3.0
 yt-dlp
+# 仅 PROXY_URL 用 socks5:// 时需要；不配代理或用 http:// 时可不装
+python-socks==2.7.2

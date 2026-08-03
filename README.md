@@ -77,6 +77,9 @@ FORWARD_INTERVAL=3          # 每两次转发之间的最小间隔秒数(默认 
 
 # ===== 本地文件清理(可选) =====
 DELETE_AFTER_UPLOAD=true    # 转发/上传成功后是否删除本地下载的文件(默认 true;设 false 保留在 DOWNLOAD_DIR)
+
+# ===== 代理(可选) =====
+PROXY_URL=                  # socks5://[user:pass@]host:port 或 http://...;留空直连,格式错误只警告不影响启动
 ```
 
 > 💡 `TARGET_CHAT` 可填 1 个或多个 ID,英文逗号分隔;留空即进入「仅下载」模式。频道 ID 通常形如 `-100xxxxxxxxxx`。

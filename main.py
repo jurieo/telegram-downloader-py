@@ -82,6 +82,31 @@ def _format_skipped(skipped):
     )
 
 
+async def _finish_status(status_msg, replied, uploaded, target_count, skipped, failed):
+    """收尾提示。
+
+    视频已回复到链接下方时，「已上传 N 个」就是废话，删掉不占版面；
+    但跳过/失败这类用户不看消息就不知道的信息必须留着。
+    """
+    extras = []
+    if skipped:
+        extras.append("⏭️ 跳过：\n" + _format_skipped(skipped))
+    if failed:
+        extras.append("⚠️ 上传失败：\n" + "\n".join(
+            f"  • {name}（{reason}）" for name, reason in failed
+        ))
+
+    if replied and not extras:
+        try:
+            await status_msg.delete()
+        except Exception as e:
+            print(f"⚠️ 删除状态消息失败：{e}")
+        return
+
+    head = f"🎉 **完成！已上传 {uploaded} 个视频到 {target_count} 个目标**"
+    await status_msg.edit("\n".join(extras if replied else [head] + extras))
+
+
 async def handle_magnet(event, magnet):
     if not ARIA2_READY:
         await event.reply("❌ **磁力下载不可用**：aria2 引擎未就绪。")
@@ -136,16 +161,9 @@ async def handle_magnet(event, magnet):
         except Exception as e:
             print(f"⚠️ 磁力视频回复到链接失败：{e}")
 
-        summary = f"🎉 **完成！已上传 {uploaded} 个视频到 {len(TARGET_IDS)} 个目标**"
-        # if replied:
-        #     summary += f"\n↩️ 已把 {replied} 个视频回复到链接下方"
-        if result.skipped:
-            summary += "\n⏭️ 跳过：\n" + _format_skipped(result.skipped)
-        if failed:
-            summary += "\n⚠️ 上传失败：\n" + "\n".join(
-                f"  • {name}（{reason}）" for name, reason in failed
-            )
-        await status_msg.edit(summary)
+        await _finish_status(
+            status_msg, replied, uploaded, len(TARGET_IDS), result.skipped, failed
+        )
 
         await aria2.cleanup(result, delete_files=DELETE_AFTER_UPLOAD)
     except Exception as e:
@@ -207,16 +225,9 @@ async def handle_twitter(event, url):
         except Exception as e:
             print(f"⚠️ 推特视频回复到链接失败：{e}")
 
-        summary = f"🎉 **完成！已上传 {uploaded} 个视频到 {len(TARGET_IDS)} 个目标**"
-        # if replied:
-        #     summary += f"\n↩️ 已把 {replied} 个视频回复到链接下方"
-        if result.skipped:
-            summary += "\n⏭️ 跳过：\n" + _format_skipped(result.skipped)
-        if failed:
-            summary += "\n⚠️ 上传失败：\n" + "\n".join(
-                f"  • {name}（{reason}）" for name, reason in failed
-            )
-        await status_msg.edit(summary)
+        await _finish_status(
+            status_msg, replied, uploaded, len(TARGET_IDS), result.skipped, failed
+        )
 
         await ytdlp.cleanup(result, delete_files=DELETE_AFTER_UPLOAD)
     except Exception as e:

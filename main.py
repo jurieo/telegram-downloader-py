@@ -39,6 +39,8 @@ MAX_FILE_SIZE_GB = float(os.getenv("MAX_FILE_SIZE_GB", "4"))
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "./downloads")
 # 相册/多文件从源下载时的并发数（默认 4；设 1 退回串行）
 MAX_DOWNLOAD_CONCURRENCY = int(os.getenv("MAX_DOWNLOAD_CONCURRENCY", "4"))
+# 单个大文件内部的分块连接数（默认 3；设 1 关闭分块，退回单连接下载）
+DOWNLOAD_CONNECTIONS = int(os.getenv("DOWNLOAD_CONNECTIONS", "3"))
 TORRENT_STALL_TIMEOUT = int(os.getenv("TORRENT_STALL_TIMEOUT", "300"))
 
 # 转发/上传成功后是否删除本地下载的文件（默认 true 删除；设 false/0/no/off 保留）。
@@ -327,6 +329,7 @@ async def handle_link(event):
             saved, dl_failed = await media_download.download_messages(
                 client, msgs, DOWNLOAD_DIR, MAX_DOWNLOAD_CONCURRENCY,
                 status_msg=status_msg, title="📥 **正在从源频道并发下载到服务器…**",
+                connections=DOWNLOAD_CONNECTIONS,
             )
             for idx, reason in dl_failed:
                 print(f"⚠️ 下载失败（第 {idx + 1} 个）：{reason}")

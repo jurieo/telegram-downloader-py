@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 from types import SimpleNamespace
 
@@ -39,7 +40,8 @@ class FakeClient:
 
     async def download_media(self, message, file=None, progress_callback=None):
         self.downloads.append(message)
-        return (file or "") + f"f{len(self.downloads)}.mp4"
+        # file 是调用方算好的完整路径（media_download._target_path），原样返回
+        return file
 
     async def send_message(self, peer, text):
         self.messages.append((peer, text))
@@ -190,7 +192,8 @@ def test_reupload_deletes_local_files_by_default(monkeypatch):
     monkeypatch.setattr(forwarder, "DELETE_AFTER_UPLOAD", True)
     c = FakeClient()
     run(forwarder.mirror(c, [B], [_msg(noforwards=True)], SentRegistry()))
-    assert removed == ["./downloads/f1.mp4"]
+    # _msg 无 file 属性，_target_path 兜底命名为 <id>.bin
+    assert removed == [os.path.join("./downloads", "1.bin")]
 
 
 def test_reupload_keeps_local_files_when_delete_disabled(monkeypatch):

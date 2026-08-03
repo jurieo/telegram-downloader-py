@@ -26,7 +26,8 @@ class FakeClient:
             self.downloads.append(message)
             if progress_callback:
                 await progress_callback(100, 100)
-            return f"{file}{message.id}.mp4"
+            # file 现在是调用方算好的完整路径，原样返回即可
+            return file
         finally:
             self.inflight -= 1
 
@@ -42,7 +43,7 @@ class FakeStatus:
 def _msg(mid, size=1024):
     return SimpleNamespace(
         id=mid, media=object(), document=SimpleNamespace(size=size),
-        file=SimpleNamespace(size=size),
+        file=SimpleNamespace(size=size, name=f"{mid}.mp4"),
     )
 
 
@@ -83,7 +84,7 @@ def test_paths_keep_input_order_for_album(dl):
     class Staggered(FakeClient):
         async def download_media(self, message, file=None, progress_callback=None):
             await asyncio.sleep(0.05 / message.id)
-            return f"{file}{message.id}.mp4"
+            return file
 
     c = Staggered()
     msgs = [_msg(i) for i in range(1, 5)]

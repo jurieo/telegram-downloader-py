@@ -32,6 +32,8 @@ DELETE_AFTER_UPLOAD = os.getenv("DELETE_AFTER_UPLOAD", "true").strip().lower() n
 
 # 相册/多文件从源下载时的并发数（默认 4，与上传并发同量级；设 1 退回串行）。
 MAX_DOWNLOAD_CONCURRENCY = int(os.getenv("MAX_DOWNLOAD_CONCURRENCY", "4"))
+# 单个大文件内部的分块连接数（默认 3；设 1 关闭分块，退回单连接下载）。
+DOWNLOAD_CONNECTIONS = int(os.getenv("DOWNLOAD_CONNECTIONS", "3"))
 
 
 def reset_flood_state():
@@ -161,6 +163,7 @@ async def _download_and_reupload(client, targets, msgs, registry, status_msg, do
     paths, dl_failed = await media_download.download_messages(
         client, msgs, download_dir, MAX_DOWNLOAD_CONCURRENCY,
         status_msg=status_msg, title="📥 **正在从源并发下载到服务器…**",
+        connections=DOWNLOAD_CONNECTIONS,
     )
     for idx, reason in dl_failed:
         print(f"⚠️ 下载源消息失败（第 {idx + 1} 个）：{reason}")

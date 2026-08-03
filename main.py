@@ -1,22 +1,25 @@
 import os
 import re
 from dotenv import load_dotenv
-from telethon import TelegramClient, events, utils
-from telethon.errors import MessageNotModifiedError
-from telethon.tl.functions.messages import GetDiscussionMessageRequest
 
-from common.filters import is_media_message
-from common.proxy import parse_proxy, redact
-from downloader.aria2_client import Aria2Client
-from downloader import ytdlp_client
-from transfer.routing import parse_target_chats, compute_targets, SentRegistry
-from transfer import forwarder
-from transfer import media_upload
-from transfer import media_download
-
-# ================= 1. 读取配置 =================
+# 必须在导入本项目模块之前加载 .env：transfer.forwarder 等模块在 import 时就用
+# os.getenv 求值模块级配置常量，晚于此处加载会让 .env 里的值被默认值覆盖。
 load_dotenv()
 
+from telethon import TelegramClient, events, utils  # noqa: E402
+from telethon.errors import MessageNotModifiedError  # noqa: E402
+from telethon.tl.functions.messages import GetDiscussionMessageRequest  # noqa: E402
+
+from common.filters import is_media_message  # noqa: E402
+from common.proxy import parse_proxy, redact  # noqa: E402
+from downloader.aria2_client import Aria2Client  # noqa: E402
+from downloader import ytdlp_client  # noqa: E402
+from transfer.routing import parse_target_chats, compute_targets, SentRegistry  # noqa: E402
+from transfer import forwarder  # noqa: E402
+from transfer import media_upload  # noqa: E402
+from transfer import media_download  # noqa: E402
+
+# ================= 1. 读取配置 =================
 try:
     API_ID = int(os.getenv("API_ID"))
     API_HASH = os.getenv("API_HASH")

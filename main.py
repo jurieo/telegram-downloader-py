@@ -350,6 +350,59 @@ async def handle_link(event):
 
 
 # ================= 5. 事件处理：路由 =================
+
+def is_download_only(chat_id):
+    """该会话此刻是否走「只下载不转发」。
+
+    TARGET_CHAT 留空即仅下载模式：收藏夹与 SOURCE_CHAT 里的媒体都落盘。
+    限定这两类而非「非备份群一律落盘」，是因为监听列表将来若扩充，
+    不应默认把任何新监听到的东西都往磁盘上堆。
+    """
+    if TARGET_IDS:
+        return False
+    return chat_id == ME_ID or chat_id in SOURCE_IDS
+
+
+async def save_saved_media(event, msgs):
+    """仅下载模式：把直接发进收藏夹的图片/视频/相册下载到本地。
+
+    README 承诺「留空 TARGET_CHAT = 收藏夹媒体下载到本地」，但原实现里这条
+    路径只对链接/磁力生效，直发媒体会静默忽略（PR #1 报告的问题）。
+    走 media_download 主路径，与链接流程共享并发/分块/命名/进度设施。
+
+    进度/结果消息一律回到收藏夹：源可能是下载机器人或别人的频道，
+    往那里刷进度既吵人也可能没有发言权。收藏夹里的消息回复到原消息下。
+    """
+    if event.chat_id == ME_ID:
+        status_msg = await event.reply("📥 **收到媒体，正在下载到服务器…**")
+    else:
+        status_msg = await client.send_message(
+            "me", f"📥 **收到来自监听源的媒体（chat={event.chat_id}），正在下载…**"
+        )
+    try:
+        saved, dl_failed = await media_download.download_messages(
+            client, msgs, DOWNLOAD_DIR, MAX_DOWNLOAD_CONCURRENCY,
+            status_msg=status_msg, title="📥 **正在下载到服务器…**",
+            connections=DOWNLOAD_CONNECTIONS,
+        )
+        registry.add_messages(status_msg)
+        if not saved:
+            reasons = "\n".join(f"  • 第 {i + 1} 个：{r}" for i, r in dl_failed)
+            await safe_status_edit(status_msg, f"❌ **下载失败**\n{reasons}")
+            return
+        lines = "\n".join(f"`{p}`" for p in saved)
+        text = f"🎉 **下载完成！** 共 {len(saved)} 个文件\n✅ 已保存到服务器：\n{lines}"
+        if dl_failed:
+            text += "\n⚠️ 部分失败：\n" + "\n".join(
+                f"  • 第 {i + 1} 个：{r}" for i, r in dl_failed
+            )
+        await safe_status_edit(status_msg, text)
+    except Exception as e:
+        detail = str(e).strip() or type(e).__name__
+        print(f"⚠️ 收藏夹媒体下载失败：{detail}")
+        await safe_status_edit(status_msg, f"❌ **下载失败**：\n`{detail}`")
+
+
 async def on_new_message(event):
     """单条消息：收藏夹处理链接/磁力/图片视频；备份群与单向源只处理图片视频。相册交给 on_album。"""
     msg = event.message
@@ -374,8 +427,11 @@ async def on_new_message(event):
         if tw:
             await handle_twitter(event, tw.group(0))
             return
-        # 收藏夹里的普通图片/视频：无引用转发到全部备份目标
+        # 收藏夹里的普通图片/视频：有备份目标则无引用转发，仅下载模式落盘
         if is_media_message(msg):
+            if is_download_only(event.chat_id):
+                await save_saved_media(event, [msg])
+                return
             try:
                 await forwarder.mirror(
                     client, compute_targets(event.chat_id, ME_ID, TARGET_IDS), [msg], registry
@@ -387,6 +443,9 @@ async def on_new_message(event):
     # 备份群 A/B/C 或单向源（机器人/频道）：只转图片/视频，静默无引用转发。
     # compute_targets 排除来源自身：备份群 → 其余成员；单向源不在集合里 → 全部成员。
     if is_media_message(msg):
+        if is_download_only(event.chat_id):
+            await save_saved_media(event, [msg])
+            return
         try:
             await forwarder.mirror(
                 client, compute_targets(event.chat_id, ME_ID, TARGET_IDS), [msg], registry
@@ -402,6 +461,9 @@ async def on_album(event):
     if not any(is_media_message(m) for m in event.messages):
         return
     targets = compute_targets(event.chat_id, ME_ID, TARGET_IDS)
+    if is_download_only(event.chat_id):
+        await save_saved_media(event, list(event.messages))
+        return
     try:
         await forwarder.mirror(client, targets, list(event.messages), registry)
     except Exception as e:
@@ -445,9 +507,6 @@ async def _amain():
         except Exception as e:
             print(f"⚠️ 无法访问监听源 {raw}，已跳过：{e}")
 
-    if SOURCE_IDS and not TARGET_IDS:
-        print("⚠️ 配置了 SOURCE_CHAT 但未配置 TARGET_CHAT：源里的媒体没有转发目标，不会有动作")
-
     client.add_event_handler(on_album, events.Album(chats=monitor))
     client.add_event_handler(on_new_message, events.NewMessage(chats=monitor))
 
@@ -455,7 +514,8 @@ async def _amain():
         src = f" + {len(SOURCE_IDS)} 个单向源" if SOURCE_IDS else ""
         print(f"🚀 UserBot 已启动：监听 收藏夹 + {len(TARGET_IDS)} 个备份目标{src}，互为无引用转发图片/视频")
     else:
-        print("🚀 UserBot 已启动：仅下载模式（未配置 TARGET_CHAT），只监听收藏夹")
+        src = f" + {len(SOURCE_IDS)} 个单向源" if SOURCE_IDS else ""
+        print(f"🚀 UserBot 已启动：仅下载模式（未配置 TARGET_CHAT），监听 收藏夹{src}，媒体只下载到本地")
 
     await client.run_until_disconnected()
 

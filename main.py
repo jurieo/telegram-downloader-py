@@ -127,7 +127,16 @@ async def handle_magnet(event, magnet):
                 except Exception as e:
                     print(f"⚠️ 磁力扇出到 {target} 失败：{e}")
 
+        # 把视频回复到原磁力链接消息下面
+        replied = 0
+        try:
+            replied = await media_upload.reply_with_media(client, event, sent, registry=registry)
+        except Exception as e:
+            print(f"⚠️ 磁力视频回复到链接失败：{e}")
+
         summary = f"🎉 **完成！已上传 {uploaded} 个视频到 {len(TARGET_IDS)} 个目标**"
+        # if replied:
+        #     summary += f"\n↩️ 已把 {replied} 个视频回复到链接下方"
         if result.skipped:
             summary += "\n⏭️ 跳过：\n" + _format_skipped(result.skipped)
         if failed:
@@ -189,7 +198,16 @@ async def handle_twitter(event, url):
                 except Exception as e:
                     print(f"⚠️ 推特扇出到 {target} 失败：{e}")
 
+        # 把视频回复到原链接消息下面，方便在收藏夹里直接播放
+        replied = 0
+        try:
+            replied = await media_upload.reply_with_media(client, event, sent, registry=registry)
+        except Exception as e:
+            print(f"⚠️ 推特视频回复到链接失败：{e}")
+
         summary = f"🎉 **完成！已上传 {uploaded} 个视频到 {len(TARGET_IDS)} 个目标**"
+        # if replied:
+        #     summary += f"\n↩️ 已把 {replied} 个视频回复到链接下方"
         if result.skipped:
             summary += "\n⏭️ 跳过：\n" + _format_skipped(result.skipped)
         if failed:

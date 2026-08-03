@@ -66,3 +66,27 @@ async def upload_videos(client, target_chat, files, status_msg, concurrency,
 
     await asyncio.gather(*[_upload_one(p) for p in files])
     return len(files) - len(failed), failed, sent_messages
+
+
+async def reply_with_media(client, event, sent, registry=None):
+    """把已上传成功的视频回复到触发它的那条消息（链接）下面。
+
+    - 复用 sent 里已经在 Telegram 服务器上的媒体（等价于按 file_id 重发），
+      不读本地文件、不重复上传，所以与 DELETE_AFTER_UPLOAD 的清理时机无关。
+    - 多个视频合成一个相册回复；单个视频作为普通视频消息回复。
+    - registry 非空时登记回复出去的消息：回复落在收藏夹里，登记后事件回调命中即跳过，
+      避免又被当成「收藏夹里的新视频」二次镜像到备份目标。
+    返回实际回复出去的视频个数。
+    """
+    medias = [m.media for m in sent or [] if getattr(m, "media", None) is not None]
+    if not medias:
+        return 0
+
+    replied = await client.send_file(
+        event.chat_id,
+        medias if len(medias) > 1 else medias[0],
+        reply_to=event.message.id,
+    )
+    if registry is not None:
+        registry.add_messages(replied)
+    return len(medias)

@@ -3,6 +3,7 @@
 *.session
 *.session-journal
 downloads/
+uploads/
 
 # 杂项
 .git

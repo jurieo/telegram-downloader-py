@@ -71,6 +71,7 @@ MAX_DOWNLOAD_CONCURRENCY=4  # 相册/多文件从源下载的并发上限(默认
 DOWNLOAD_CONNECTIONS=3      # 单个大文件(>10MB)内部的分块连接数(默认 3,设 1 关闭分块)
 MAX_FILE_SIZE_GB=4          # 单文件大小上限 GB,超过则不下载不上传(默认 4,对应 Premium 4GB)
 DOWNLOAD_DIR=./downloads    # 下载目录
+UPLOAD_DIR=./uploads        # 启动扫描上传目录(放进去的图片/视频在服务启动时按相册组上传到 TARGET_CHAT)
 TORRENT_STALL_TIMEOUT=300   # 种子长时间无速度即放弃的秒数(处理"无人做种")
 
 # ===== 转发限速(可选) =====
@@ -114,6 +115,10 @@ python main.py
    - 只支持**公开推文**(不接 cookies);需登录才能看的(NSFW/受保护/私密)会提示无法下载
    - 推文内**图片**不在下载范围(yt-dlp 面向视频)
 5. 机器人会回复一条状态消息,并实时更新进度,直至完成
+6. 也可以把图片/视频文件直接放进 `UPLOAD_DIR`(默认 `./uploads`)目录,**重启服务**后自动按相册组(每组最多 10 个,按文件名排序)上传到 `TARGET_CHAT` 并扇出到其余备份目标
+   - 防重复:`DELETE_AFTER_UPLOAD=true`(默认)时上传成功即删除文件;设 `false` 保留文件,已传记录写入目录内的 `.uploaded.json` 清单,再次启动时跳过(文件内容改动过会重新上传)
+   - 上传失败的文件不删除、不记清单,下轮扫描自动重试;触发限流时中止本轮,在后台等约半小时(Telegram 罚时更长则按罚时等)后自动续传,续传仍被限流才等到下次启动
+   - 隐藏文件、`.part`/`.tmp` 等未写完的临时文件、非图片/视频文件会被跳过
 
 > 🧲 本地运行磁力功能需要系统已安装 `aria2`(`apt install aria2` / `brew install aria2`);Docker 镜像已内置。
 > 🐦 推特下载**通常不需要 ffmpeg**(主通道 fxtwitter 直链是自带音轨的单文件 mp4);仅极少数只有分离音视频流的视频需要,本地可选装(`brew install ffmpeg`),镜像为控制体积未内置。
@@ -171,7 +176,8 @@ docker compose down         # 停止并移除容器
 ├── transfer/                 # Telegram 转发侧
 │   ├── routing.py            #   路由与防回环:目标解析 + 转发拓扑 + 已发消息登记(纯逻辑)
 │   ├── forwarder.py          #   无引用转发:直接转发 + 相册整组 + 受保护下载重传 + 传一次转其余
-│   └── media_upload.py       #   视频并发上传 + FloodWait 退避
+│   ├── media_upload.py       #   视频并发上传 + FloodWait 退避
+│   └── startup_upload.py     #   启动扫描 uploads 目录:按相册组上传 + 清单防重复
 ├── scripts/                  # 联调脚本(aria2_selftest.py / ytdlp_selftest.py,不依赖 Telegram)
 ├── tests/                    # 纯逻辑单元测试(pytest)
 ├── requirements.txt          # Python 依赖

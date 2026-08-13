@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 from dotenv import load_dotenv
@@ -18,6 +19,7 @@ from transfer.routing import parse_target_chats, compute_targets, SentRegistry  
 from transfer import forwarder  # noqa: E402
 from transfer import media_upload  # noqa: E402
 from transfer import media_download  # noqa: E402
+from transfer import startup_upload  # noqa: E402
 
 # ================= 1. 读取配置 =================
 try:
@@ -40,6 +42,8 @@ SOURCE_CHATS = parse_target_chats(os.getenv("SOURCE_CHAT"))
 MAX_UPLOAD_CONCURRENCY = int(os.getenv("MAX_UPLOAD_CONCURRENCY", "4"))
 MAX_FILE_SIZE_GB = float(os.getenv("MAX_FILE_SIZE_GB", "4"))
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "./downloads")
+# 启动扫描上传目录：放进来的图片/视频在服务启动时按相册组上传到 TARGET_CHAT
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", "./uploads")
 # 相册/多文件从源下载时的并发数（默认 4；设 1 退回串行）
 MAX_DOWNLOAD_CONCURRENCY = int(os.getenv("MAX_DOWNLOAD_CONCURRENCY", "4"))
 # 单个大文件内部的分块连接数（默认 3；设 1 关闭分块，退回单连接下载）
@@ -520,7 +524,25 @@ async def _amain():
         src = f" + {len(SOURCE_IDS)} 个单向源" if SOURCE_IDS else ""
         print(f"🚀 UserBot 已启动：仅下载模式（未配置 TARGET_CHAT），监听 收藏夹{src}，媒体只下载到本地")
 
-    await client.run_until_disconnected()
+    # 启动扫描：把 UPLOAD_DIR 里的图片/视频按相册组上传到备份目标（防重复见模块注释）。
+    # 放后台任务：触发限流时会延时半小时以上自动续传，等待期间不能阻塞消息监听。
+    # 失败只警告：启动上传是附加能力，不该拖垮监听主服务。
+    async def _startup_upload_task():
+        try:
+            await startup_upload.run(
+                client, TARGET_IDS, UPLOAD_DIR, int(MAX_FILE_SIZE_GB * (1024 ** 3)),
+                registry, DELETE_AFTER_UPLOAD,
+            )
+        except Exception as e:
+            detail = str(e).strip() or type(e).__name__
+            print(f"⚠️ uploads 目录启动扫描失败：{detail}")
+
+    upload_task = asyncio.ensure_future(_startup_upload_task())
+
+    try:
+        await client.run_until_disconnected()
+    finally:
+        upload_task.cancel()
 
 
 if __name__ == '__main__':

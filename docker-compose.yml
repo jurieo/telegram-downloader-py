@@ -10,3 +10,5 @@ services:
       - ./my_transfer_session.session:/app/my_transfer_session.session
       # 下载目录：持久化到宿主机
       - ./downloads:/app/downloads
+      # 启动扫描上传目录：放进去的图片/视频在服务启动时上传到 TARGET_CHAT
+      - ./uploads:/app/uploads

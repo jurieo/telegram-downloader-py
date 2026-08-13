@@ -1,10 +1,12 @@
 """启动扫描上传：服务启动时把 UPLOAD_DIR 里的图片/视频上传到备份目标。
 
-- 按文件名排序后切成相册组（每组最多 10 个，Telegram 媒体组上限），整组一次
-  send_file 生成相册，避免「一条对话只有一个文件」的碎片体验。
-- 防重复：DELETE_AFTER_UPLOAD=true 时成功即删文件，目录里剩下的天然是未传的；
-  =false 时把 (文件名, 大小, mtime) 记入目录内的 .uploaded.json 清单，下次启动
-  命中即跳过；文件被改动过（大小或 mtime 变了）视为新文件重新上传。
+- 递归遍历子目录，只挑图片/视频；按相对路径排序后切成相册组（每组最多 10 个，
+  Telegram 媒体组上限），同一子目录的文件归入同一批相册、不与其他目录混组，
+  整组一次 send_file 生成相册，避免「一条对话只有一个文件」的碎片体验。
+- 防重复：DELETE_AFTER_UPLOAD=true 时成功即删文件（清空的子目录顺手删掉），
+  目录里剩下的天然是未传的；=false 时把 (相对路径, 大小, mtime) 记入根目录的
+  .uploaded.json 清单，下次启动命中即跳过；文件被改动过（大小或 mtime 变了）
+  视为新文件重新上传。
 - 失败的文件不删除、不记清单，下次扫描自动重试；命中 FloodWait 且重试耗尽时
   中止本次扫描，延时后自动续传（见 run），仍被限流才放弃到下次启动。
 - 扫描/分组/清单是纯逻辑，与 telethon 调用分离，便于单测。
@@ -33,33 +35,34 @@ TEMP_EXTS = {".part", ".aria2", ".tmp", ".crdownload", ".download", ".downloadin
 # ================= 纯逻辑：扫描 / 清单 / 分组 =================
 
 def scan_files(upload_dir):
-    """扫描上传目录顶层，返回 (排序后的媒体文件路径列表, 被忽略的非媒体文件名列表)。
+    """递归扫描上传目录，返回 (排序后的媒体文件路径列表, 被忽略文件的相对路径列表)。
 
-    跳过：子目录、隐藏文件（含清单自身）、临时后缀文件。
-    排序按文件名，保证相册分组在多次启动间稳定可预期。
+    跳过：隐藏文件/隐藏目录（含清单自身）、临时后缀文件。
+    按相对路径排序：同一子目录的文件天然相邻，配合 chunk_albums 的按目录分组，
+    相册内容在多次启动间稳定可预期。
     """
     paths, ignored = [], []
     try:
-        names = os.listdir(upload_dir)
-    except FileNotFoundError:
+        for root, dirs, names in os.walk(upload_dir):
+            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+            for name in sorted(names):
+                if name.startswith("."):
+                    continue
+                if os.path.splitext(name)[1].lower() in TEMP_EXTS:
+                    continue
+                path = os.path.join(root, name)
+                if is_video(name) or is_image(name):
+                    paths.append(path)
+                else:
+                    ignored.append(os.path.relpath(path, upload_dir))
+    except OSError:
         return [], []
-    for name in sorted(names):
-        if name.startswith("."):
-            continue
-        path = os.path.join(upload_dir, name)
-        if not os.path.isfile(path):
-            continue
-        if os.path.splitext(name)[1].lower() in TEMP_EXTS:
-            continue
-        if is_video(name) or is_image(name):
-            paths.append(path)
-        else:
-            ignored.append(name)
+    paths.sort(key=lambda p: os.path.relpath(p, upload_dir))
     return paths, ignored
 
 
 def load_manifest(upload_dir):
-    """读取已上传清单：{文件名: {"size": int, "mtime": int}}。损坏/缺失按空清单处理。"""
+    """读取已上传清单：{相对路径: {"size": int, "mtime": int}}。损坏/缺失按空清单处理。"""
     try:
         with open(os.path.join(upload_dir, MANIFEST_NAME), encoding="utf-8") as f:
             data = json.load(f)
@@ -77,17 +80,22 @@ def save_manifest(upload_dir, manifest):
         print(f"⚠️ 写入上传清单失败：{e}")
 
 
-def record_uploaded(manifest, path):
-    """把一个已成功上传的文件记入清单（同名旧记录被覆盖）。"""
+def record_uploaded(manifest, upload_dir, path):
+    """把一个已成功上传的文件记入清单（键为相对路径，同键旧记录被覆盖）。
+
+    用相对路径而非文件名做键：不同子目录允许同名文件，互不干扰。
+    """
     try:
         st = os.stat(path)
     except OSError:
         return
-    manifest[os.path.basename(path)] = {"size": st.st_size, "mtime": int(st.st_mtime)}
+    manifest[os.path.relpath(path, upload_dir)] = {
+        "size": st.st_size, "mtime": int(st.st_mtime),
+    }
 
 
-def _in_manifest(manifest, path):
-    ent = manifest.get(os.path.basename(path))
+def _in_manifest(manifest, upload_dir, path):
+    ent = manifest.get(os.path.relpath(path, upload_dir))
     if not isinstance(ent, dict):
         return False
     try:
@@ -97,15 +105,15 @@ def _in_manifest(manifest, path):
     return ent.get("size") == st.st_size and ent.get("mtime") == int(st.st_mtime)
 
 
-def plan_uploads(paths, manifest, max_bytes):
+def plan_uploads(paths, manifest, upload_dir, max_bytes):
     """决定哪些文件要传：返回 (待上传列表, skipped, 清单命中数)。
 
-    skipped 为 [(文件名, 字节大小, 原因)]，目前仅「超过大小上限」；
+    skipped 为 [(相对路径, 字节大小, 原因)]，目前仅「超过大小上限」；
     清单命中（上次已传成功）静默跳过，只回传个数用于日志。
     """
     pending, skipped, already = [], [], 0
     for path in paths:
-        if _in_manifest(manifest, path):
+        if _in_manifest(manifest, upload_dir, path):
             already += 1
             continue
         try:
@@ -113,15 +121,30 @@ def plan_uploads(paths, manifest, max_bytes):
         except OSError:
             continue
         if size > max_bytes:
-            skipped.append((os.path.basename(path), size, "超过大小上限"))
+            skipped.append((os.path.relpath(path, upload_dir), size, "超过大小上限"))
             continue
         pending.append(path)
     return pending, skipped, already
 
 
-def chunk_albums(paths, size=ALBUM_SIZE):
-    """把文件列表切成相册组，每组最多 size 个。"""
-    return [paths[i:i + size] for i in range(0, len(paths), size)]
+def chunk_albums(paths, upload_dir, size=ALBUM_SIZE):
+    """把文件列表切成相册组：先按所在子目录分堆，堆内每 size 个一组。
+
+    同一子目录往往是同一批内容（一部剧、一个图集），不与其他目录混进
+    同一条相册；输入已按相对路径排序，目录出现顺序即分组顺序。
+    """
+    groups = []
+    cur_dir, cur = None, []
+    for p in paths:
+        d = os.path.dirname(os.path.relpath(p, upload_dir))
+        if d != cur_dir or len(cur) >= size:
+            if cur:
+                groups.append(cur)
+            cur_dir, cur = d, []
+        cur.append(p)
+    if cur:
+        groups.append(cur)
+    return groups
 
 
 # ================= 上传流程 =================
@@ -173,6 +196,23 @@ async def _upload_group(client, target, group, flood_retries):
     return sent, ok_paths, failed
 
 
+def _remove_uploaded_file(upload_dir, path):
+    """删除已上传的文件；所在子目录被清空则一并删掉（只清理到 upload_dir 为止）。"""
+    try:
+        os.remove(path)
+    except OSError as e:
+        print(f"⚠️ 删除已上传文件失败（{path}）：{e}")
+        return
+    d = os.path.dirname(path)
+    root = os.path.abspath(upload_dir)
+    while os.path.abspath(d) != root:
+        try:
+            os.rmdir(d)   # 非空时抛 OSError，即刻停止
+        except OSError:
+            break
+        d = os.path.dirname(d)
+
+
 async def _safe_edit(status_msg, text):
     try:
         await status_msg.edit(text)
@@ -202,7 +242,7 @@ async def process(client, target_ids, upload_dir, max_bytes, registry,
               + ("…" if len(ignored) > 5 else ""))
 
     manifest = load_manifest(upload_dir)
-    pending, skipped, already = plan_uploads(paths, manifest, max_bytes)
+    pending, skipped, already = plan_uploads(paths, manifest, upload_dir, max_bytes)
     if already:
         print(f"ℹ️ uploads 目录 {already} 个文件已在清单中（上次已传），跳过")
     if not pending:
@@ -213,7 +253,7 @@ async def process(client, target_ids, upload_dir, max_bytes, registry,
             print("ℹ️ uploads 目录无待上传文件")
         return None
 
-    groups = chunk_albums(pending)
+    groups = chunk_albums(pending, upload_dir)
     print(f"📦 uploads 目录发现 {len(pending)} 个待上传文件，分 {len(groups)} 组相册上传…")
     status_msg = await client.send_message(
         "me",
@@ -252,15 +292,12 @@ async def process(client, target_ids, upload_dir, max_bytes, registry,
             except Exception as e:
                 print(f"⚠️ 启动上传扇出到 {target} 失败：{e}")
 
-        # 成功即出队：删文件或记清单（每组落盘一次，中途挂掉不丢进度）
+        # 成功即出队：删文件（顺带清空目录）或记清单（每组落盘一次，中途挂掉不丢进度）
         for path in ok_paths:
             if delete_after_upload:
-                try:
-                    os.remove(path)
-                except OSError as e:
-                    print(f"⚠️ 删除已上传文件失败（{path}）：{e}")
+                _remove_uploaded_file(upload_dir, path)
             else:
-                record_uploaded(manifest, path)
+                record_uploaded(manifest, upload_dir, path)
         if not delete_after_upload and ok_paths:
             save_manifest(upload_dir, manifest)
 

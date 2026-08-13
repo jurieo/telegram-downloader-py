@@ -71,11 +71,28 @@ def test_scan_skips_hidden_temp_and_non_media(tmp_path):
     _touch(d, ".uploaded.json")
     _touch(d, "movie.mp4.part")
     _touch(d, "notes.txt")
-    os.mkdir(os.path.join(d, "sub"))
 
     paths, ignored = startup_upload.scan_files(d)
     assert [os.path.basename(p) for p in paths] == ["a.jpg", "b.mp4"]  # 按名排序
     assert ignored == ["notes.txt"]
+
+
+def test_scan_recurses_into_subdirs(tmp_path):
+    d = str(tmp_path)
+    _touch(d, "top.mp4")
+    os.makedirs(os.path.join(d, "剧集", "S01"))
+    _touch(os.path.join(d, "剧集"), "e1.mp4")
+    _touch(os.path.join(d, "剧集", "S01"), "e2.mkv")
+    _touch(os.path.join(d, "剧集"), "cover.txt")
+    os.mkdir(os.path.join(d, ".hidden"))
+    _touch(os.path.join(d, ".hidden"), "x.mp4")   # 隐藏目录整个跳过
+
+    paths, ignored = startup_upload.scan_files(d)
+    rels = [os.path.relpath(p, d) for p in paths]
+    assert rels == ["top.mp4",
+                    os.path.join("剧集", "S01", "e2.mkv"),
+                    os.path.join("剧集", "e1.mp4")]
+    assert ignored == [os.path.join("剧集", "cover.txt")]
 
 
 def test_scan_missing_dir_returns_empty(tmp_path):
@@ -83,11 +100,27 @@ def test_scan_missing_dir_returns_empty(tmp_path):
     assert paths == [] and ignored == []
 
 
-def test_chunk_albums_max_10_per_group():
-    paths = [f"{i}.mp4" for i in range(23)]
-    groups = startup_upload.chunk_albums(paths)
+def test_chunk_albums_max_10_per_group(tmp_path):
+    d = str(tmp_path)
+    paths = [os.path.join(d, f"{i:02d}.mp4") for i in range(23)]
+    groups = startup_upload.chunk_albums(paths, d)
     assert [len(g) for g in groups] == [10, 10, 3]
-    assert startup_upload.chunk_albums([]) == []
+    assert startup_upload.chunk_albums([], d) == []
+
+
+def test_chunk_albums_never_mixes_subdirs(tmp_path):
+    """不同子目录的文件不混进同一条相册（同目录 = 同一批内容）。"""
+    d = str(tmp_path)
+    paths = ([os.path.join(d, "a", f"{i}.mp4") for i in range(3)]
+             + [os.path.join(d, "b", f"{i}.mp4") for i in range(12)]
+             + [os.path.join(d, "top.mp4")])
+    paths.sort(key=lambda p: os.path.relpath(p, d))
+    groups = startup_upload.chunk_albums(paths, d)
+
+    assert [len(g) for g in groups] == [3, 10, 2, 1]
+    for g in groups:
+        dirs = {os.path.dirname(os.path.relpath(p, d)) for p in g}
+        assert len(dirs) == 1
 
 
 def test_plan_skips_manifest_hits_and_oversize(tmp_path):
@@ -96,14 +129,28 @@ def test_plan_skips_manifest_hits_and_oversize(tmp_path):
     _touch(d, "new.mp4", size=10)
     big = _touch(d, "big.mp4", size=200)
     manifest = {}
-    startup_upload.record_uploaded(manifest, done)
+    startup_upload.record_uploaded(manifest, d, done)
 
     pending, skipped, already = startup_upload.plan_uploads(
-        [done, os.path.join(d, "new.mp4"), big], manifest, max_bytes=100
+        [done, os.path.join(d, "new.mp4"), big], manifest, d, max_bytes=100
     )
     assert [os.path.basename(p) for p in pending] == ["new.mp4"]
     assert skipped == [("big.mp4", 200, "超过大小上限")]
     assert already == 1
+
+
+def test_manifest_keys_by_relpath_not_basename(tmp_path):
+    """不同子目录的同名文件在清单里互不干扰。"""
+    d = str(tmp_path)
+    os.mkdir(os.path.join(d, "a"))
+    os.mkdir(os.path.join(d, "b"))
+    pa = _touch(os.path.join(d, "a"), "v.mp4", mtime=1000)
+    pb = _touch(os.path.join(d, "b"), "v.mp4", mtime=1000)
+    manifest = {}
+    startup_upload.record_uploaded(manifest, d, pa)
+
+    pending, _, already = startup_upload.plan_uploads([pa, pb], manifest, d, GB)
+    assert pending == [pb] and already == 1
 
 
 def test_modified_file_reuploads(tmp_path):
@@ -111,10 +158,10 @@ def test_modified_file_reuploads(tmp_path):
     d = str(tmp_path)
     p = _touch(d, "v.mp4", size=10, mtime=1000)
     manifest = {}
-    startup_upload.record_uploaded(manifest, p)
+    startup_upload.record_uploaded(manifest, d, p)
     _touch(d, "v.mp4", size=20, mtime=2000)  # 内容更新
 
-    pending, _, already = startup_upload.plan_uploads([p], manifest, max_bytes=GB)
+    pending, _, already = startup_upload.plan_uploads([p], manifest, d, max_bytes=GB)
     assert pending == [p] and already == 0
 
 
@@ -122,7 +169,7 @@ def test_manifest_roundtrip_and_corrupt(tmp_path):
     d = str(tmp_path)
     p = _touch(d, "v.mp4", mtime=1234)
     manifest = {}
-    startup_upload.record_uploaded(manifest, p)
+    startup_upload.record_uploaded(manifest, d, p)
     startup_upload.save_manifest(d, manifest)
     assert startup_upload.load_manifest(d) == manifest
 
@@ -153,6 +200,25 @@ def test_uploads_as_albums_and_fans_out(tmp_path):
     assert startup_upload.scan_files(d)[0] == []
     # 发出的消息已登记，防二次镜像
     assert len(reg._set) > 0
+
+
+def test_uploads_subdir_media_and_removes_empty_dirs(tmp_path):
+    """子目录里的媒体也上传；成功删除后清空的子目录一并清理，根目录保留。"""
+    d = str(tmp_path)
+    os.makedirs(os.path.join(d, "剧集", "S01"))
+    _touch(os.path.join(d, "剧集", "S01"), "e1.mp4")
+    _touch(os.path.join(d, "剧集", "S01"), "e2.mp4")
+    _touch(d, "top.jpg")
+    c = FakeClient()
+
+    run(startup_upload.process(c, [-100111], d, GB, SentRegistry(),
+                               delete_after_upload=True))
+
+    # 顶层 1 组 + 子目录 1 组，互不混组
+    assert sorted(len(f) if isinstance(f, list) else 1 for _, f, _ in c.sent_files) == [1, 2]
+    assert startup_upload.scan_files(d)[0] == []
+    assert not os.path.exists(os.path.join(d, "剧集"))   # 空目录级联清理
+    assert os.path.isdir(d)                              # 根目录保留
 
 
 def test_manifest_prevents_reupload_when_keeping_files(tmp_path):

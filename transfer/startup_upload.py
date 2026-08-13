@@ -166,27 +166,29 @@ async def _send_with_retry(client, target, files, caption, flood_retries):
 async def _upload_group(client, target, group, flood_retries):
     """整组发相册；相册整体失败时退回逐个上传，隔离坏文件。
 
+    caption 统一为空：uploads 目录里的文件名多是无意义的随机字符，
+    当说明文字只会碍眼（文件名仅用于日志与失败报告）。
     返回 (sent_messages, ok_paths, failed)，failed 为 [(文件名, 原因)]。
     FloodWait 重试耗尽会向上抛，由 process 中止本次扫描（下次启动续传）。
     """
-    captions = [os.path.basename(p) for p in group]
     try:
         sent = await _send_with_retry(
-            client, target, list(group), captions, flood_retries
+            client, target, list(group), "", flood_retries
         )
         return (sent if isinstance(sent, list) else [sent]), list(group), []
     except FloodWaitError:
         raise
     except Exception as e:
         if len(group) == 1:
-            return [], [], [(captions[0], str(e).strip() or type(e).__name__)]
+            name = os.path.basename(group[0])
+            return [], [], [(name, str(e).strip() or type(e).__name__)]
         print(f"⚠️ 相册整组上传失败，退回逐个上传：{e}")
 
     sent, ok_paths, failed = [], [], []
     for path in group:
         name = os.path.basename(path)
         try:
-            m = await _send_with_retry(client, target, path, name, flood_retries)
+            m = await _send_with_retry(client, target, path, "", flood_retries)
             sent.append(m)
             ok_paths.append(path)
         except FloodWaitError:

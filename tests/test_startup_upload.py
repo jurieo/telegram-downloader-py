@@ -194,6 +194,8 @@ def test_uploads_as_albums_and_fans_out(tmp_path):
     assert len(c.sent_files) == 2
     assert all(t == -100111 for t, _, _ in c.sent_files)
     assert [len(f) for _, f, _ in c.sent_files] == [10, 2]
+    # 不带文件名当说明（uploads 里的文件名多是无意义字符）
+    assert all(cap == "" for _, _, cap in c.sent_files)
     # 每组扇出一次到第二个目标
     assert [t for t, _ in c.forwards] == [-100222, -100222]
     # 成功即删（DELETE_AFTER_UPLOAD=true）

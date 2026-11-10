@@ -203,3 +203,64 @@ def test_reupload_keeps_local_files_when_delete_disabled(monkeypatch):
     c = FakeClient()
     run(forwarder.mirror(c, [B], [_msg(noforwards=True)], SentRegistry()))
     assert removed == []
+
+
+# ---------- 纯文字转发（FORWARD_TEXT） ----------
+class TextClient(FakeClient):
+    async def send_message(self, peer, text, formatting_entities=None, link_preview=None):
+        self.messages.append((peer, text))
+        return self._new(peer)
+
+
+def _text(noforwards=False, text="hello", mid=1):
+    return SimpleNamespace(
+        noforwards=noforwards, media=None, message=text, entities=None,
+        web_preview=None, id=mid, chat_id=-100999,
+    )
+
+
+def test_forward_text_to_each_target_with_drop_author():
+    c = TextClient()
+    reg = SentRegistry()
+    m = _text()
+    assert run(forwarder.forward_text(c, [B, C], m, reg)) is True
+    assert [(t, d) for t, _, d in c.forwards] == [(B, True), (C, True)]
+    assert c.forwards[0][1] is m
+    assert len(reg._set) == 2
+
+
+def test_forward_text_restricted_resends_text():
+    c = TextClient()
+    reg = SentRegistry()
+    assert run(forwarder.forward_text(c, [B, C], _text(noforwards=True, text="secret"), reg))
+    assert c.forwards == []
+    assert c.messages == [(B, "secret"), (C, "secret")]
+    assert len(reg._set) == 2
+
+
+def test_forward_text_noop_without_targets():
+    c = TextClient()
+    assert run(forwarder.forward_text(c, [], _text(), SentRegistry())) is False
+    assert c.forwards == [] and c.messages == []
+
+
+def test_forward_text_skipped_in_cooldown():
+    c = FloodOnceClient(seconds=600)
+    reg = SentRegistry()
+    assert run(forwarder.forward_text(c, [B], _text(), reg)) is False   # 触发冷却
+    assert forwarder.in_cooldown()
+    before = len(c.forwards)
+    assert run(forwarder.forward_text(c, [B], _text(mid=2), reg)) is False
+    assert len(c.forwards) == before
+
+
+def test_forward_text_default_off(monkeypatch):
+    import importlib
+    monkeypatch.delenv("FORWARD_TEXT", raising=False)
+    try:
+        assert importlib.reload(forwarder).FORWARD_TEXT is False
+        monkeypatch.setenv("FORWARD_TEXT", "true")
+        assert importlib.reload(forwarder).FORWARD_TEXT is True
+    finally:
+        monkeypatch.delenv("FORWARD_TEXT", raising=False)
+        importlib.reload(forwarder)

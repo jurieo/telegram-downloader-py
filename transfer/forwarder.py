@@ -30,6 +30,12 @@ DELETE_AFTER_UPLOAD = os.getenv("DELETE_AFTER_UPLOAD", "true").strip().lower() n
     "0", "false", "no", "off"
 )
 
+# 是否同时转发纯文字消息（默认 false 关闭：只转图片/视频；设 true/1/yes/on 开启）。
+# 只作用于备份群与 SOURCE_CHAT；收藏夹的文字是链接/磁力指令和机器人状态提醒，永不转发。
+FORWARD_TEXT = os.getenv("FORWARD_TEXT", "false").strip().lower() in (
+    "1", "true", "yes", "on"
+)
+
 # 相册/多文件从源下载时的并发数（默认 4，与上传并发同量级；设 1 退回串行）。
 MAX_DOWNLOAD_CONCURRENCY = int(os.getenv("MAX_DOWNLOAD_CONCURRENCY", "4"))
 # 单个大文件内部的分块连接数（默认 3；设 1 关闭分块，退回单连接下载）。
@@ -101,22 +107,13 @@ def _with_media(messages):
     return [m for m in messages if m is not None and getattr(m, "media", None) is not None]
 
 
-async def mirror(client, targets, messages, registry, status_msg=None, download_dir="./downloads"):
-    """把 messages（单条或相册列表）无引用镜像到 targets（多个目标）。
-
-    优先零下载直接转发；源受保护（禁转）时下载后重传。status_msg 非空（me 的链接
-    流程）时显示进度与结果，否则静默（A/B/C 备份群）。返回是否有实际转发。
-    命中 FloodWait 限流时进入冷却并跳过（返回 False），期间的调用直接跳过。
-    """
+async def _cooldown_gate(client, count, status_msg=None):
+    """转发前的限流闸门：冷却期内返回 False（跳过）；冷却刚结束时发一次「已恢复」。"""
     global _cooldown_active
-    msgs = _with_media(messages)
-    if not msgs or not targets:
-        return False
-
     # 处于限流冷却期：直接跳过，不发任何转发请求（源消息仍在，不算丢失）
     if in_cooldown():
         secs = cooldown_remaining()
-        print(f"⏳ 转发限流冷却中（剩余约 {secs}s），跳过本组 {len(msgs)} 条")
+        print(f"⏳ 转发限流冷却中（剩余约 {secs}s），跳过本组 {count} 条")
         if status_msg:
             await status_msg.edit(f"⏳ **转发被限流，冷却剩余约 {secs}s，已跳过本次**")
         return False
@@ -125,6 +122,56 @@ async def mirror(client, targets, messages, registry, status_msg=None, download_
     if _cooldown_active:
         _cooldown_active = False
         await _notify(client, "✅ **转发已恢复**（限流冷却结束）。")
+    return True
+
+
+async def forward_text(client, targets, message, registry):
+    """把一条纯文字消息无引用转发到 targets（受 FORWARD_TEXT 开关控制，由调用方判断）。
+
+    与媒体共用限速与限流冷却。源禁止转发（noforwards）时改为按原文 + 格式实体
+    重新发送，效果等同无引用转发。返回是否有实际转发。
+    """
+    if message is None or not targets:
+        return False
+    if not await _cooldown_gate(client, 1):
+        return False
+
+    restricted = getattr(message, "noforwards", False)
+    try:
+        for target in targets:
+            await _pace()
+            sent = None
+            if not restricted:
+                try:
+                    sent = await client.forward_messages(target, message, drop_author=True)
+                except ChatForwardsRestrictedError:
+                    restricted = True
+            if sent is None:
+                sent = await client.send_message(
+                    target, message.message,
+                    formatting_entities=getattr(message, "entities", None),
+                    link_preview=getattr(message, "web_preview", None) is not None,
+                )
+            registry.add_messages(sent)
+        return True
+    except FloodWaitError as e:
+        await _enter_cooldown(client, e.seconds)
+        return False
+
+
+async def mirror(client, targets, messages, registry, status_msg=None, download_dir="./downloads"):
+    """把 messages（单条或相册列表）无引用镜像到 targets（多个目标）。
+
+    优先零下载直接转发；源受保护（禁转）时下载后重传。status_msg 非空（me 的链接
+    流程）时显示进度与结果，否则静默（A/B/C 备份群）。返回是否有实际转发。
+    命中 FloodWait 限流时进入冷却并跳过（返回 False），期间的调用直接跳过。
+    """
+    msgs = _with_media(messages)
+    if not msgs or not targets:
+        return False
+
+    if not await _cooldown_gate(client, len(msgs), status_msg):
+        return False
 
     restricted = any(getattr(m, "noforwards", False) for m in msgs)
     try:

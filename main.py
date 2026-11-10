@@ -11,7 +11,7 @@ from telethon import TelegramClient, events, utils  # noqa: E402
 from telethon.errors import MessageNotModifiedError  # noqa: E402
 from telethon.tl.functions.messages import GetDiscussionMessageRequest  # noqa: E402
 
-from common.filters import is_media_message  # noqa: E402
+from common.filters import is_media_message, is_text_message  # noqa: E402
 from common.proxy import parse_proxy, redact  # noqa: E402
 from downloader.aria2_client import Aria2Client  # noqa: E402
 from downloader import ytdlp_client  # noqa: E402
@@ -411,7 +411,7 @@ async def save_saved_media(event, msgs):
 
 
 async def on_new_message(event):
-    """单条消息：收藏夹处理链接/磁力/图片视频；备份群与单向源只处理图片视频。相册交给 on_album。"""
+    """单条消息：收藏夹处理链接/磁力/图片视频；备份群与单向源处理图片视频（FORWARD_TEXT 开启时含纯文字）。相册交给 on_album。"""
     msg = event.message
 
     # 防回环：机器人自己发出/转发出去的消息直接跳过
@@ -447,7 +447,7 @@ async def on_new_message(event):
                 print(f"⚠️ 收藏夹媒体转发失败（id={msg.id}）：{e}")
         return
 
-    # 备份群 A/B/C 或单向源（机器人/频道）：只转图片/视频，静默无引用转发。
+    # 备份群 A/B/C 或单向源（机器人/频道）：转图片/视频（FORWARD_TEXT 开启时也转纯文字），静默无引用转发。
     # compute_targets 排除来源自身：备份群 → 其余成员；单向源不在集合里 → 全部成员。
     if is_media_message(msg):
         if is_download_only(event.chat_id):
@@ -459,6 +459,17 @@ async def on_new_message(event):
             )
         except Exception as e:
             print(f"⚠️ 备份群媒体转发失败（chat={event.chat_id}, id={msg.id}）：{e}")
+        return
+
+    # 纯文字（FORWARD_TEXT 开关，默认关）：同样按 compute_targets 无引用转发。
+    # 仅下载模式下没有目标，compute_targets 返回空，forward_text 直接 no-op。
+    if forwarder.FORWARD_TEXT and is_text_message(msg):
+        try:
+            await forwarder.forward_text(
+                client, compute_targets(event.chat_id, ME_ID, TARGET_IDS), msg, registry
+            )
+        except Exception as e:
+            print(f"⚠️ 文字转发失败（chat={event.chat_id}, id={msg.id}）：{e}")
 
 
 async def on_album(event):
@@ -519,7 +530,8 @@ async def _amain():
 
     if TARGET_IDS:
         src = f" + {len(SOURCE_IDS)} 个单向源" if SOURCE_IDS else ""
-        print(f"🚀 UserBot 已启动：监听 收藏夹 + {len(TARGET_IDS)} 个备份目标{src}，互为无引用转发图片/视频")
+        kinds = "图片/视频/文字" if forwarder.FORWARD_TEXT else "图片/视频"
+        print(f"🚀 UserBot 已启动：监听 收藏夹 + {len(TARGET_IDS)} 个备份目标{src}，互为无引用转发{kinds}")
     else:
         src = f" + {len(SOURCE_IDS)} 个单向源" if SOURCE_IDS else ""
         print(f"🚀 UserBot 已启动：仅下载模式（未配置 TARGET_CHAT），监听 收藏夹{src}，媒体只下载到本地")

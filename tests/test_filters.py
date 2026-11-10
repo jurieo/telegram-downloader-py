@@ -44,3 +44,24 @@ def test_plan_files_boundary_equal_limit_is_kept():
     indices, paths, skipped = plan_files(files, 4 * GB)
     assert indices == ["1"]
     assert skipped == []
+
+
+# ---------- 纯文字判断（FORWARD_TEXT） ----------
+from types import SimpleNamespace  # noqa: E402
+
+from common.filters import is_text_message  # noqa: E402
+
+
+def _t(message="hi", media=None, web_preview=None, action=None):
+    return SimpleNamespace(message=message, media=media, web_preview=web_preview, action=action)
+
+
+def test_is_text_message():
+    assert is_text_message(_t("hello"))
+    # 带网页预览的链接仍算文字
+    assert is_text_message(_t("https://x.com", media=object(), web_preview=object()))
+    assert not is_text_message(_t(""))                      # 空文本
+    assert not is_text_message(_t("   "))                   # 纯空白
+    assert not is_text_message(_t("caption", media=object()))  # 带文件媒体（图片说明）
+    assert not is_text_message(_t("pinned", action=object()))  # 服务消息
+    assert not is_text_message(None)

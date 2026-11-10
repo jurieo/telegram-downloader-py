@@ -80,6 +80,21 @@ def is_media_message(message):
     return is_video_message(message) or is_image_message(message)
 
 
+def is_text_message(message):
+    """判断一条消息是否「纯文字」：有非空文本，且不带文件类媒体。
+
+    网页预览（链接卡片）不算媒体，仍按文字处理；服务消息（入群、置顶等）排除。
+    鸭子类型读取属性，方便脱离 telethon 用假对象做单测。
+    """
+    if message is None or getattr(message, "action", None) is not None:
+        return False
+    text = getattr(message, "message", None) or getattr(message, "raw_text", None) or ""
+    if not text.strip():
+        return False
+    media = getattr(message, "media", None)
+    return media is None or getattr(message, "web_preview", None) is not None
+
+
 def plan_files(files, max_file_bytes):
     """根据 aria2.getFiles 的文件清单，决定哪些下载、哪些跳过。
 

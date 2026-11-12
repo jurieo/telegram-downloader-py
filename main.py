@@ -15,7 +15,9 @@ from common.filters import is_media_message, is_text_message  # noqa: E402
 from common.proxy import parse_proxy, redact  # noqa: E402
 from downloader.aria2_client import Aria2Client  # noqa: E402
 from downloader import ytdlp_client  # noqa: E402
-from transfer.routing import parse_target_chats, compute_targets, SentRegistry  # noqa: E402
+from transfer.routing import (  # noqa: E402
+    parse_target_chats, compute_targets, SentRegistry, OwnTextTracker,
+)
 from transfer import forwarder  # noqa: E402
 from transfer import media_upload  # noqa: E402
 from transfer import media_download  # noqa: E402
@@ -62,7 +64,34 @@ PROXY_URL = os.getenv("PROXY_URL", "")
 _proxy = parse_proxy(PROXY_URL)
 if _proxy:
     print(f"🌐 使用代理：{redact(PROXY_URL)}")
-client = TelegramClient('my_transfer_session', API_ID, API_HASH, proxy=_proxy)
+# 程序自己发出的文字（状态提醒等）：发送前按内容预登记，收藏夹文字转发时据此跳过
+own_texts = OwnTextTracker()
+
+
+class TransferClient(TelegramClient):
+    """在 send_message 发出前登记文字内容。
+
+    event.reply / Message.reply 内部也走 client.send_message，因此所有状态提醒
+    都会经过这里。同时登记原文与按 parse_mode 解析后的文本（事件里拿到的是
+    去掉 ** 等 markdown 标记后的纯文本）。
+    """
+
+    async def send_message(self, entity, message='', *args, **kwargs):
+        if isinstance(message, str) and message:
+            own_texts.mark(message)
+            if not kwargs.get("formatting_entities"):
+                try:
+                    parsed, _ = await self._parse_message_text(
+                        message, kwargs.get("parse_mode", ())
+                    )
+                    if parsed != message:
+                        own_texts.mark(parsed)
+                except Exception:
+                    pass
+        return await super().send_message(entity, message, *args, **kwargs)
+
+
+client = TransferClient('my_transfer_session', API_ID, API_HASH, proxy=_proxy)
 # 适当抬高自动等待阈值：并发上传触发小额 FloodWait 时由 telethon 自行 sleep
 client.flood_sleep_threshold = 120
 
@@ -411,7 +440,7 @@ async def save_saved_media(event, msgs):
 
 
 async def on_new_message(event):
-    """单条消息：收藏夹处理链接/磁力/图片视频；备份群与单向源处理图片视频（FORWARD_TEXT 开启时含纯文字）。相册交给 on_album。"""
+    """单条消息：收藏夹先处理链接/磁力指令；图片视频（FORWARD_TEXT 开启时含纯文字）按来源无引用转发。相册交给 on_album。"""
     msg = event.message
 
     # 防回环：机器人自己发出/转发出去的消息直接跳过
@@ -422,6 +451,9 @@ async def on_new_message(event):
         return
 
     if event.chat_id == ME_ID:
+        # 程序自己发进收藏夹的状态提醒（进度、限流通知等）：不当指令、不转发
+        if is_text_message(msg) and own_texts.consume(msg.message):
+            return
         text = msg.raw_text or ""
         magnet = re.search(MAGNET_RE, text)
         if magnet:
@@ -434,21 +466,9 @@ async def on_new_message(event):
         if tw:
             await handle_twitter(event, tw.group(0))
             return
-        # 收藏夹里的普通图片/视频：有备份目标则无引用转发，仅下载模式落盘
-        if is_media_message(msg):
-            if is_download_only(event.chat_id):
-                await save_saved_media(event, [msg])
-                return
-            try:
-                await forwarder.mirror(
-                    client, compute_targets(event.chat_id, ME_ID, TARGET_IDS), [msg], registry
-                )
-            except Exception as e:
-                print(f"⚠️ 收藏夹媒体转发失败（id={msg.id}）：{e}")
-        return
 
-    # 备份群 A/B/C 或单向源（机器人/频道）：转图片/视频（FORWARD_TEXT 开启时也转纯文字），静默无引用转发。
-    # compute_targets 排除来源自身：备份群 → 其余成员；单向源不在集合里 → 全部成员。
+    # 图片/视频：收藏夹 → 全部备份目标；备份群 A/B/C → 其余成员；单向源 → 全部成员。
+    # compute_targets 排除来源自身与 me，静默无引用转发；仅下载模式落盘。
     if is_media_message(msg):
         if is_download_only(event.chat_id):
             await save_saved_media(event, [msg])
@@ -458,10 +478,11 @@ async def on_new_message(event):
                 client, compute_targets(event.chat_id, ME_ID, TARGET_IDS), [msg], registry
             )
         except Exception as e:
-            print(f"⚠️ 备份群媒体转发失败（chat={event.chat_id}, id={msg.id}）：{e}")
+            print(f"⚠️ 媒体转发失败（chat={event.chat_id}, id={msg.id}）：{e}")
         return
 
-    # 纯文字（FORWARD_TEXT 开关，默认关）：同样按 compute_targets 无引用转发。
+    # 纯文字（FORWARD_TEXT 开关，默认关）：路由同图片/视频。收藏夹里的链接/磁力指令
+    # 已在上面处理掉，程序自己的状态提醒也已跳过，剩下的才是用户要转发的文字。
     # 仅下载模式下没有目标，compute_targets 返回空，forward_text 直接 no-op。
     if forwarder.FORWARD_TEXT and is_text_message(msg):
         try:

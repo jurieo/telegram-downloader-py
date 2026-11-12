@@ -3,7 +3,9 @@
 - parse_target_chats：解析 .env 里逗号分隔的多个目标 id。
 - compute_targets：给定视频出现的来源，算出要无引用转发到哪些目标。
 - SentRegistry：记录机器人自己发出的消息，事件回调命中即跳过，防止互为备份时死循环。
+- OwnTextTracker：发送前按内容预登记自身文字，认出收藏夹里程序自己发的状态提醒。
 """
+import time
 from collections import deque
 
 
@@ -79,3 +81,41 @@ class SentRegistry:
 
     def contains(self, chat_id, message_id):
         return (chat_id, message_id) in self._set
+
+
+class OwnTextTracker:
+    """记录程序自己即将发出的文字，用来在收藏夹里认出「自己发的状态提醒」。
+
+    状态提醒的消息 id 要等 send_message 返回才知道，而它的 NewMessage 事件可能
+    先到，SentRegistry 来不及登记。所以改在发送前按内容预登记：事件到达时内容
+    命中就消费掉并跳过。每次登记只抵消一次；超过 ttl 秒未被消费的自动作废，
+    避免发送失败的残留误伤之后用户手打的同样文字。
+    """
+
+    def __init__(self, ttl=120, maxlen=500, clock=None):
+        self._ttl = ttl
+        self._clock = clock or time.monotonic
+        self._items = deque(maxlen=maxlen)   # [(text, 登记时间)]
+
+    @staticmethod
+    def _norm(text):
+        return (text or "").strip()
+
+    def mark(self, text):
+        text = self._norm(text)
+        if text:
+            self._items.append((text, self._clock()))
+
+    def consume(self, text):
+        """text 是否为近期登记过的自身文字；命中则消费掉一次并返回 True。"""
+        text = self._norm(text)
+        if not text:
+            return False
+        now = self._clock()
+        while self._items and now - self._items[0][1] > self._ttl:
+            self._items.popleft()
+        for i, (t, _) in enumerate(self._items):
+            if t == text:
+                del self._items[i]
+                return True
+        return False

@@ -96,3 +96,39 @@ def test_registry_bounded_evicts_oldest():
     assert not r.contains(1, 1)
     assert r.contains(1, 2)
     assert r.contains(1, 3)
+
+
+# ---------- OwnTextTracker：认出程序自己发进收藏夹的文字 ----------
+from transfer.routing import OwnTextTracker  # noqa: E402
+
+
+def test_own_text_consumed_once():
+    t = OwnTextTracker()
+    t.mark("🔄 正在解析链接...")
+    assert t.consume("🔄 正在解析链接...") is True
+    # 每次登记只抵消一次：用户之后手打同样内容仍会被转发
+    assert t.consume("🔄 正在解析链接...") is False
+
+
+def test_own_text_ignores_whitespace_and_unknown():
+    t = OwnTextTracker()
+    t.mark("  hello \n")
+    assert t.consume("hello") is True
+    assert t.consume("用户自己写的话") is False
+    assert t.consume("") is False
+
+
+def test_own_text_expires_after_ttl():
+    now = [0.0]
+    t = OwnTextTracker(ttl=10, clock=lambda: now[0])
+    t.mark("stale")
+    now[0] = 11
+    assert t.consume("stale") is False
+
+
+def test_own_text_duplicate_marks_each_consumed():
+    t = OwnTextTracker()
+    t.mark("x")
+    t.mark("x")
+    assert t.consume("x") and t.consume("x")
+    assert not t.consume("x")

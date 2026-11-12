@@ -31,7 +31,7 @@ DELETE_AFTER_UPLOAD = os.getenv("DELETE_AFTER_UPLOAD", "true").strip().lower() n
 )
 
 # 是否同时转发纯文字消息（默认 false 关闭：只转图片/视频；设 true/1/yes/on 开启）。
-# 只作用于备份群与 SOURCE_CHAT；收藏夹的文字是链接/磁力指令和机器人状态提醒，永不转发。
+# 收藏夹里的链接/磁力指令与程序自己发的状态提醒不在此列（由 main.py 先行排除）。
 FORWARD_TEXT = os.getenv("FORWARD_TEXT", "false").strip().lower() in (
     "1", "true", "yes", "on"
 )
